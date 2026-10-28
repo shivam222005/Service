@@ -8,22 +8,51 @@ import {
   NotificationItem, 
   AdminStats, 
   BookingStatus,
+  BookingStatusHistory,
+  AIAnalysisResponse,
+  AdminAnalyticsData,
   EmergencyRequest,
   EmergencyIncidentType,
-  EmergencyStatus
+  EmergencyStatus,
+  PaymentRecord,
+  BillBreakdown,
+  PaymentReceipt
 } from '../types.js';
 
 const TOKEN_KEY = 'servicehub_auth_token';
+let inMemoryToken: string | null = null;
+
+export function getApiBaseUrl(): string {
+  if (typeof import.meta !== 'undefined' && import.meta.env) {
+    if (import.meta.env.VITE_API_URL) {
+      return String(import.meta.env.VITE_API_URL).replace(/\/+$/, '');
+    }
+    if (import.meta.env.VITE_API_BASE_URL) {
+      return String(import.meta.env.VITE_API_BASE_URL).replace(/\/+$/, '');
+    }
+  }
+  return '';
+}
 
 export function getStoredToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+  try {
+    const token = localStorage.getItem(TOKEN_KEY);
+    return token || inMemoryToken;
+  } catch (_e) {
+    return inMemoryToken;
+  }
 }
 
 export function setStoredToken(token: string | null): void {
-  if (token) {
-    localStorage.setItem(TOKEN_KEY, token);
-  } else {
-    localStorage.removeItem(TOKEN_KEY);
+  inMemoryToken = token;
+  try {
+    if (token) {
+      localStorage.setItem(TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(TOKEN_KEY);
+    }
+  } catch (_e) {
+    // Graceful fallback for restricted iframe storage
   }
 }
 
@@ -39,7 +68,10 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  const response = await fetch(endpoint, {
+  const baseUrl = getApiBaseUrl();
+  const url = endpoint.startsWith('http') ? endpoint : `${baseUrl}${endpoint}`;
+
+  const response = await fetch(url, {
     ...options,
     headers,
   });
@@ -166,11 +198,38 @@ export const api = {
       });
     },
 
-    updateStatus: async (id: number, status: BookingStatus): Promise<{ message: string }> => {
+    updateStatus: async (id: number, status: BookingStatus, notes?: string): Promise<{ message: string }> => {
       return request(`/api/bookings/${id}/status`, {
         method: 'PATCH',
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, notes }),
       });
+    },
+
+    getTimeline: async (id: number): Promise<{ success: boolean; timeline: BookingStatusHistory[] }> => {
+      return request(`/api/bookings/${id}/timeline`);
+    },
+  },
+
+  payments: {
+    completeService: async (bookingId: number): Promise<{ success: boolean; message: string; booking: Booking; payment: PaymentRecord; breakdown: BillBreakdown }> => {
+      return request(`/api/bookings/${bookingId}/complete`, {
+        method: 'POST',
+      });
+    },
+
+    getPayment: async (bookingId: number): Promise<{ success: boolean; payment: PaymentRecord; breakdown: BillBreakdown; booking: any }> => {
+      return request(`/api/bookings/${bookingId}/payment`);
+    },
+
+    verifyPayment: async (paymentOrBookingId: number | string, data: { razorpay_payment_id?: string; razorpay_order_id?: string; razorpay_signature?: string; bank_reference?: string } = {}): Promise<{ success: boolean; verified: boolean; message: string; payment: PaymentRecord; booking: Booking; receipt: PaymentReceipt }> => {
+      return request(`/api/payments/${paymentOrBookingId}/verify`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    getReceipt: async (bookingId: number): Promise<{ success: boolean; receipt: PaymentReceipt }> => {
+      return request(`/api/bookings/${bookingId}/receipt`);
     },
   },
 
@@ -199,6 +258,9 @@ export const api = {
     getStats: async (): Promise<AdminStats> => {
       return request('/api/admin/stats');
     },
+    getUsers: async (): Promise<any[]> => {
+      return request('/api/admin/users');
+    },
     getProviders: async (): Promise<any[]> => {
       return request('/api/admin/providers');
     },
@@ -208,12 +270,44 @@ export const api = {
         body: JSON.stringify({ status }),
       });
     },
+    getServices: async (): Promise<any[]> => {
+      return request('/api/admin/services');
+    },
+    deleteService: async (id: number): Promise<{ message: string }> => {
+      return request(`/api/admin/services/${id}`, {
+        method: 'DELETE',
+      });
+    },
+    updateServiceStatus: async (id: number, status: 'ACTIVE' | 'PAUSED'): Promise<{ message: string }> => {
+      return request(`/api/admin/services/${id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
+    },
     getBookings: async (): Promise<Booking[]> => {
       return request('/api/admin/bookings');
+    },
+    updateBookingStatus: async (id: number, status: BookingStatus): Promise<{ message: string }> => {
+      return request(`/api/bookings/${id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
     },
     deleteReview: async (id: number): Promise<{ message: string }> => {
       return request(`/api/admin/reviews/${id}`, {
         method: 'DELETE',
+      });
+    },
+    getAnalytics: async (range: string = '30d'): Promise<AdminAnalyticsData> => {
+      return request(`/api/admin/analytics?range=${range}`);
+    },
+  },
+
+  ai: {
+    askAssistant: async (data: { query: string; city?: string; pincode?: string }): Promise<{ success: boolean; data: AIAnalysisResponse }> => {
+      return request('/api/ai/assistant', {
+        method: 'POST',
+        body: JSON.stringify(data),
       });
     },
   },

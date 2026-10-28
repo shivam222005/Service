@@ -10,15 +10,24 @@ import {
   CheckCircle, 
   ArrowRight, 
   Sparkles,
-  Wrench,
-  Zap,
-  Hammer,
-  ChevronRight,
-  Tractor,
-  Cpu,
-  Flame,
-  BadgeCheck,
-  ShieldAlert
+  Wrench, 
+  Zap, 
+  Hammer, 
+  ChevronRight, 
+  Tractor, 
+  Cpu, 
+  Flame, 
+  BadgeCheck, 
+  ShieldAlert,
+  Wind,
+  Droplets,
+  Calendar,
+  CalendarCheck,
+  CheckCircle2,
+  Users,
+  ChevronDown,
+  HelpCircle,
+  Award
 } from 'lucide-react';
 
 interface HomePageProps {
@@ -26,6 +35,7 @@ interface HomePageProps {
   onOpenBooking: (service: ServiceListing) => void;
   onOpenAuth: (defaultRole?: 'CUSTOMER' | 'SERVICE_PROVIDER') => void;
   onOpenEmergency: () => void;
+  onOpenAiAssistant: () => void;
 }
 
 export const HomePage: React.FC<HomePageProps> = ({
@@ -33,6 +43,7 @@ export const HomePage: React.FC<HomePageProps> = ({
   onOpenBooking,
   onOpenAuth,
   onOpenEmergency,
+  onOpenAiAssistant,
 }) => {
   const [categories, setCategories] = useState<Category[]>([]);
   const [featuredServices, setFeaturedServices] = useState<ServiceListing[]>([]);
@@ -43,7 +54,7 @@ export const HomePage: React.FC<HomePageProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
   const [locationTerm, setLocationTerm] = useState('Pune');
-  const [pincodeTerm, setPincodeTerm] = useState('');
+  const [openFaq, setOpenFaq] = useState<number | null>(null);
 
   useEffect(() => {
     loadHomeData();
@@ -53,12 +64,12 @@ export const HomePage: React.FC<HomePageProps> = ({
     try {
       const [cats, servs, provs] = await Promise.all([
         api.categories.getAll(),
-        api.services.getAll({ limit: 6, sort: 'rating' }),
+        api.services.getAll({ sort: 'rating' }),
         api.providers.getAll(),
       ]);
       setCategories(cats);
-      setFeaturedServices(servs.slice(0, 4));
-      setProviders(provs.slice(0, 4));
+      setFeaturedServices(servs);
+      setProviders(provs.filter(p => p.verification_status === 'APPROVED'));
     } catch (err) {
       console.error('Failed to load homepage data:', err);
     } finally {
@@ -69,41 +80,70 @@ export const HomePage: React.FC<HomePageProps> = ({
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     onNavigate('browse', {
-      search: searchTerm,
-      category: selectedCategory,
-      city: locationTerm,
-      pincode: pincodeTerm,
+      search: searchTerm.trim() || undefined,
+      category: selectedCategory || undefined,
+      city: locationTerm.trim() || undefined,
     });
   };
 
+  // 6 Primary Popular Category Slugs requested by user
+  const popularSlugs = [
+    'ac-repair-maintenance',
+    'plumbing-water-tanks',
+    'electrical-smart-home',
+    'home-cleaning',
+    'carpentry-woodwork',
+    'appliance-repair'
+  ];
+
+  // Match existing categories in database or fallback to all
+  const popularCategories = popularSlugs
+    .map(slug => categories.find(c => c.slug === slug))
+    .filter((c): c is Category => Boolean(c));
+
+  // If some popular categories are still loading, fallback to first 6
+  const displayedCategories = popularCategories.length >= 4 
+    ? popularCategories 
+    : categories.slice(0, 6);
+
+  // Curated AC services specifically for AC highlight
+  const acServices = featuredServices.filter(s => 
+    s.category_slug === 'ac-repair-maintenance' || 
+    s.title.toLowerCase().includes('ac') || 
+    s.title.toLowerCase().includes('air condition')
+  );
+
   return (
-    <div className="space-y-16 lg:space-y-24 pb-16">
-      {/* 1. Hero Section */}
-      <section className="relative pt-6 sm:pt-10 lg:pt-14 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-stretch">
-          {/* Left Column: Headlines & Search */}
-          <div className="lg:col-span-7 flex flex-col justify-center space-y-6">
-            <div className="inline-flex items-center gap-2 text-xs font-semibold text-emerald-800 bg-emerald-50 px-3.5 py-1.5 rounded-full w-fit border border-emerald-200">
-              <ShieldCheck className="w-4 h-4 text-emerald-600" />
-              <span>Aadhaar & Trade-Verified Specialists · Across Cities, Talukas & Villages</span>
+    <div className="space-y-16 lg:space-y-24 pb-20 bg-slate-50">
+      {/* 1. Hero Section (Two Column: Left headlines & search, Right verified pro composition) */}
+      <section className="relative pt-8 sm:pt-12 lg:pt-16 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-center">
+          {/* Left Column */}
+          <div className="lg:col-span-7 space-y-6">
+            {/* Small trust badge */}
+            <div className="inline-flex items-center gap-2 text-xs font-bold text-blue-700 bg-blue-50 px-3.5 py-1.5 rounded-full border border-blue-200/80 shadow-2xs">
+              <ShieldCheck className="w-4 h-4 text-blue-600" />
+              <span>Your Local Service Partner · Verified Specialists Across India</span>
             </div>
 
-            <h1 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold text-slate-900 tracking-tight leading-[1.18]">
-              Skilled local professionals, <br className="hidden sm:inline" />
-              for every home, farm & business.
+            {/* Large headline */}
+            <h1 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold text-slate-900 tracking-tight leading-[1.15]">
+              Trusted Home Services, <br />
+              <span className="text-blue-600">Made Simple.</span>
             </h1>
 
-            <p className="text-base sm:text-lg text-slate-600 leading-relaxed max-w-xl">
-              From agricultural solar pump mechanics and inverter technicians in rural talukas to certified electric vehicle chargers and home deep cleaning across Indian metros.
+            {/* Supporting text */}
+            <p className="text-base sm:text-lg text-slate-600 leading-relaxed max-w-xl font-normal">
+              ServiceHub connects homeowners, farms, and businesses with Aadhaar-verified technicians for AC repair, plumbing, electrical installations, deep cleaning, and carpentry.
             </p>
 
-            {/* Urgent Emergency Quick-Response Card */}
+            {/* Urgent Household Emergency Alert Strip */}
             <div className="bg-gradient-to-r from-red-600 via-rose-600 to-red-700 text-white rounded-2xl p-4 sm:p-5 shadow-lg border border-red-500/50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="flex items-start gap-3.5">
                 <div className="p-2.5 rounded-xl bg-white/20 text-white shrink-0">
                   <ShieldAlert className="w-6 h-6 animate-pulse" />
                 </div>
-                <div className="space-y-1 text-xs">
+                <div className="space-y-0.5 text-xs">
                   <div className="flex items-center gap-2">
                     <span className="bg-red-950/60 text-red-100 uppercase tracking-widest text-[10px] font-mono px-2 py-0.5 rounded font-bold">
                       Emergency Help Desk
@@ -111,10 +151,10 @@ export const HomePage: React.FC<HomePageProps> = ({
                     <span className="text-red-100 font-mono text-[11px]">Free Instant Access</span>
                   </div>
                   <h3 className="text-sm sm:text-base font-extrabold text-white">
-                    Household Emergency? (LPG Leak, Electrical Spark, Burst Pipe, Fire)
+                    LPG Gas Leak, Electrical Spark, or Burst Pipe?
                   </h3>
-                  <p className="text-red-100 leading-relaxed text-[11px] sm:text-xs max-w-xl">
-                    Access official Indian emergency helplines (1906 / 112 / 101) & safety instructions immediately without login, or request urgent vetted repair assistance.
+                  <p className="text-red-100 leading-relaxed text-[11px] sm:text-xs max-w-lg">
+                    Access immediate safety protocols and official emergency helplines (1906 / 112) without login, or request urgent specialist dispatch.
                   </p>
                 </div>
               </div>
@@ -122,17 +162,17 @@ export const HomePage: React.FC<HomePageProps> = ({
               <button
                 type="button"
                 onClick={onOpenEmergency}
-                className="px-5 py-2.5 bg-white text-red-700 hover:bg-red-50 font-extrabold text-xs rounded-xl shadow-md cursor-pointer shrink-0 transition-transform hover:scale-105 inline-flex items-center justify-center gap-2"
+                className="px-4 py-2.5 bg-white text-red-700 hover:bg-red-50 font-extrabold text-xs rounded-xl shadow-md cursor-pointer shrink-0 transition-transform hover:scale-105 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
               >
-                <span>Get Emergency Help Now</span>
+                <span>Emergency Help</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Comprehensive Search Bar Strip (India Localized with PIN code & District) */}
+            {/* Functional Service Search Field */}
             <form
               onSubmit={handleSearchSubmit}
-              className="bg-white p-2.5 sm:p-3 rounded-2xl shadow-lg border border-slate-200 flex flex-col sm:flex-row gap-2 items-stretch text-xs"
+              className="bg-white p-2.5 rounded-2xl shadow-md border border-slate-200 flex flex-col sm:flex-row gap-2 items-stretch text-xs"
             >
               <div className="flex-1 flex items-center gap-2 px-3 py-2 border-b sm:border-b-0 sm:border-r border-slate-100">
                 <Search className="w-4 h-4 text-slate-400 shrink-0" />
@@ -140,40 +180,29 @@ export const HomePage: React.FC<HomePageProps> = ({
                   type="text"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Service (e.g. Solar Pump, Inverter, Cleaning)"
-                  className="w-full text-slate-800 placeholder-slate-400 focus:outline-none"
+                  placeholder="Service (e.g. AC Repair, Plumber, Cleaning)"
+                  className="w-full text-slate-900 placeholder-slate-400 focus:outline-none text-xs sm:text-sm font-medium"
                 />
               </div>
 
-              <div className="sm:w-36 flex items-center gap-1.5 px-3 py-2 border-b sm:border-b-0 sm:border-r border-slate-100">
+              <div className="sm:w-44 flex items-center gap-1.5 px-3 py-2 border-b sm:border-b-0 sm:border-r border-slate-100">
                 <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                 <input
                   type="text"
                   value={locationTerm}
                   onChange={(e) => setLocationTerm(e.target.value)}
-                  placeholder="City / District"
-                  className="w-full text-slate-800 placeholder-slate-400 focus:outline-none"
+                  placeholder="City / Area (e.g. Pune)"
+                  className="w-full text-slate-800 placeholder-slate-400 focus:outline-none text-xs sm:text-sm"
                 />
               </div>
 
-              <div className="sm:w-28 flex items-center px-2 py-2 border-b sm:border-b-0 sm:border-r border-slate-100">
-                <input
-                  type="text"
-                  value={pincodeTerm}
-                  maxLength={6}
-                  onChange={(e) => setPincodeTerm(e.target.value)}
-                  placeholder="PIN code"
-                  className="w-full font-mono text-slate-800 placeholder-slate-400 focus:outline-none"
-                />
-              </div>
-
-              <div className="sm:w-44 flex items-center px-2 py-1">
+              <div className="sm:w-48 flex items-center px-2 py-1">
                 <select
                   value={selectedCategory}
                   onChange={(e) => setSelectedCategory(e.target.value)}
-                  className="w-full text-slate-700 bg-transparent focus:outline-none cursor-pointer py-1"
+                  className="w-full text-slate-700 bg-transparent focus:outline-none cursor-pointer py-1 text-xs"
                 >
-                  <option value="">All Categories</option>
+                  <option value="">All Service Sectors</option>
                   {categories.map((c) => (
                     <option key={c.id} value={c.slug}>
                       {c.name}
@@ -184,356 +213,588 @@ export const HomePage: React.FC<HomePageProps> = ({
 
               <button
                 type="submit"
-                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer shrink-0 shadow-sm"
+                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer shrink-0 shadow-sm"
               >
                 <span>Search</span>
-                <ArrowRight className="w-3.5 h-3.5" />
+                <ArrowRight className="w-4 h-4" />
               </button>
             </form>
 
-            {/* Quick Filter Indian Tags */}
-            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 pt-1">
-              <span className="font-semibold text-slate-700">Popular In India:</span>
+            {/* Primary & Secondary Call to Actions */}
+            <div className="flex flex-wrap items-center gap-3 pt-1">
               <button
                 type="button"
-                onClick={() => onNavigate('browse', { category: 'agriculture-rural' })}
-                className="hover:text-blue-600 cursor-pointer underline decoration-slate-300 underline-offset-4"
+                onClick={() => onNavigate('browse', { sort: 'rating' })}
+                className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs sm:text-sm shadow-md shadow-blue-600/25 transition-all cursor-pointer inline-flex items-center gap-2"
               >
-                Solar Pumps & Drip
+                <Users className="w-4 h-4" />
+                <span>Find a Professional</span>
               </button>
-              <span>·</span>
+
               <button
                 type="button"
-                onClick={() => onNavigate('browse', { category: 'electronics-inverter-ro' })}
-                className="hover:text-blue-600 cursor-pointer underline decoration-slate-300 underline-offset-4"
+                onClick={() => onNavigate('browse')}
+                className="px-6 py-3 bg-white hover:bg-slate-50 text-slate-800 border border-slate-200 rounded-xl font-bold text-xs sm:text-sm transition-all cursor-pointer inline-flex items-center gap-2 shadow-2xs"
               >
-                Inverter & Battery
+                <span>Explore Services</span>
+                <ArrowRight className="w-4 h-4 text-slate-500" />
               </button>
-              <span>·</span>
+
               <button
                 type="button"
-                onClick={() => onNavigate('browse', { category: 'home-cleaning' })}
-                className="hover:text-blue-600 cursor-pointer underline decoration-slate-300 underline-offset-4"
+                onClick={onOpenAiAssistant}
+                className="px-4 py-3 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200/80 rounded-xl font-bold text-xs sm:text-sm transition-all cursor-pointer inline-flex items-center gap-2 shadow-2xs"
               >
-                Festival Deep Clean
-              </button>
-              <span>·</span>
-              <button
-                type="button"
-                onClick={() => onNavigate('browse', { category: 'puja-vedic-events' })}
-                className="hover:text-blue-600 cursor-pointer underline decoration-slate-300 underline-offset-4"
-              >
-                Griha Pravesh Puja
+                <Sparkles className="w-4 h-4 text-blue-600 animate-pulse" />
+                <span>AI Service Assistant</span>
               </button>
             </div>
           </div>
 
-          {/* Right Column: Hero Visual Showcase */}
-          <div className="lg:col-span-5 relative flex items-center">
-            <div className="w-full h-80 sm:h-96 lg:h-full min-h-[400px] rounded-3xl overflow-hidden shadow-xl border border-slate-200/90 relative group">
-              <img
-                src="/src/assets/images/hero_india_servicehub_1792827855340.jpg"
-                alt="ServiceHub India verified technicians and service professionals on duty"
-                referrerPolicy="no-referrer"
-                className="w-full h-full object-cover group-hover:scale-102 transition-transform duration-500"
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-slate-950/85 via-slate-950/25 to-transparent flex flex-col justify-end p-6 text-white">
-                <div className="flex items-center gap-2 mb-1.5">
-                  <span className="px-2.5 py-0.5 bg-emerald-600 rounded text-[11px] font-semibold tracking-wide flex items-center gap-1">
-                    <BadgeCheck className="w-3 h-3" />
-                    Aadhaar Verified Professional
-                  </span>
-                  <span className="text-xs text-slate-300 font-mono">Baramati · MH</span>
+          {/* Right Column: Premium Home-Services Visual Composition with Technician */}
+          <div className="lg:col-span-5 relative">
+            <div className="relative rounded-3xl overflow-hidden shadow-2xl border border-slate-200 bg-white">
+              <div className="h-96 sm:h-[460px] overflow-hidden relative">
+                <img
+                  src="https://images.unsplash.com/photo-1621905251189-08b45d6a269e?w=1000&auto=format&fit=crop&q=80"
+                  alt="Certified ServiceHub technician servicing air conditioner unit"
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-cover"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-slate-950/85 via-slate-950/20 to-transparent flex flex-col justify-end p-6 text-white">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="px-2.5 py-0.5 bg-emerald-600 rounded-md text-[11px] font-bold tracking-wide flex items-center gap-1 shadow-xs">
+                      <BadgeCheck className="w-3.5 h-3.5" />
+                      Aadhaar & Trade Verified
+                    </span>
+                    <span className="text-xs text-slate-300 font-mono">Pune Metro · MH</span>
+                  </div>
+                  <h3 className="text-lg sm:text-xl font-extrabold">Rahul Shinde & Certified Team</h3>
+                  <p className="text-xs text-slate-200">CoolAir Pro HVAC Solutions · 5.0 ★ (8 yrs experience)</p>
                 </div>
-                <h3 className="text-lg font-bold">Rameshwar Patil & Partner Specialists</h3>
-                <p className="text-xs text-slate-200">Kisan Mitra Solar Pumps & Agro Repairs · 5.0 ★ (11 yrs exp)</p>
+              </div>
+
+              {/* Floating Information Card 1: Top Right */}
+              <div className="absolute top-4 right-4 bg-white/95 backdrop-blur-md border border-slate-200/80 rounded-2xl p-3 shadow-lg flex items-center gap-3 animate-in fade-in duration-300">
+                <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div className="text-left text-xs">
+                  <p className="font-extrabold text-slate-900 leading-tight">100% Verified</p>
+                  <p className="text-slate-500 text-[11px]">Background Audited</p>
+                </div>
+              </div>
+
+              {/* Floating Information Card 2: Bottom Left */}
+              <div className="absolute bottom-24 left-4 bg-white/95 backdrop-blur-md border border-slate-200/80 rounded-2xl p-3 shadow-lg flex items-center gap-3 animate-in fade-in duration-300">
+                <div className="w-9 h-9 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
+                  <Calendar className="w-5 h-5" />
+                </div>
+                <div className="text-left text-xs">
+                  <p className="font-extrabold text-slate-900 leading-tight">Instant Confirmation</p>
+                  <p className="text-slate-500 text-[11px]">Real-time Tracking</p>
+                </div>
               </div>
             </div>
           </div>
         </div>
 
-        {/* 4-Column Proof Metrics Row */}
+        {/* 4-Item Proof Metrics Row */}
         <div className="mt-12 pt-8 border-t border-slate-200/80 grid grid-cols-2 md:grid-cols-4 gap-6 text-center">
-          <div>
+          <div className="p-4 bg-white rounded-2xl border border-slate-200/70 shadow-2xs">
             <p className="text-2xl sm:text-3xl font-extrabold text-slate-900 font-mono tabular-nums">12,400+</p>
             <p className="text-xs text-slate-500 mt-0.5">Homes & Farms Served</p>
           </div>
-          <div>
+          <div className="p-4 bg-white rounded-2xl border border-slate-200/70 shadow-2xs">
             <p className="text-2xl sm:text-3xl font-extrabold text-slate-900 font-mono tabular-nums">600+ PIN Codes</p>
             <p className="text-xs text-slate-500 mt-0.5">Cities, Talukas & Villages</p>
           </div>
-          <div>
+          <div className="p-4 bg-white rounded-2xl border border-slate-200/70 shadow-2xs">
             <p className="text-2xl sm:text-3xl font-extrabold text-slate-900 font-mono tabular-nums">100%</p>
-            <p className="text-xs text-slate-500 mt-0.5">Aadhaar & Skill Audited</p>
+            <p className="text-xs text-slate-500 mt-0.5">Aadhaar Audited Specialists</p>
           </div>
-          <div>
-            <p className="text-2xl sm:text-3xl font-extrabold text-slate-900 font-mono tabular-nums">4.9 / 5</p>
-            <p className="text-xs text-slate-500 mt-0.5">Verified Customer Rating</p>
+          <div className="p-4 bg-white rounded-2xl border border-slate-200/70 shadow-2xs">
+            <p className="text-2xl sm:text-3xl font-extrabold text-slate-900 font-mono tabular-nums">4.9 / 5.0</p>
+            <p className="text-xs text-slate-500 mt-0.5">Customer Satisfaction</p>
           </div>
         </div>
       </section>
 
-      {/* 2. Popular Categories Section (India Localized) */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-end justify-between mb-8">
+      {/* 2. Popular Service Categories (6 image cards) */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
           <div>
-            <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Essential Service Sectors</h2>
-            <p className="text-xs text-slate-500 mt-1">From farm equipment & power backup to home hygiene and sacred rituals</p>
-          </div>
-          <button
-            onClick={() => onNavigate('categories')}
-            className="text-xs font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1 cursor-pointer"
-          >
-            <span>All Categories</span>
-            <ChevronRight className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          {categories.slice(0, 4).map((cat) => (
-            <div
-              key={cat.id}
-              onClick={() => onNavigate('browse', { category: cat.slug })}
-              className="group bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col"
-            >
-              <div className="h-44 overflow-hidden relative bg-slate-100">
-                <img
-                  src={cat.image_url}
-                  alt={cat.name}
-                  referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-slate-950/70 to-transparent"></div>
-                <div className="absolute bottom-3 left-3 right-3 text-white">
-                  <span className="text-[10px] font-mono uppercase tracking-wide text-slate-300 block mb-0.5">
-                    {cat.sector === 'AGRI_RURAL' ? 'Rural & Agriculture' : cat.sector === 'ELECTRONICS' ? 'Power & Diagnostics' : cat.sector === 'COMMUNITY' ? 'Cultural & Events' : 'Home Services'}
-                  </span>
-                  <h3 className="font-bold text-sm tracking-tight">{cat.name}</h3>
-                </div>
-              </div>
-              <div className="p-4 flex-1 flex flex-col justify-between">
-                <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed">
-                  {cat.description}
-                </p>
-                <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-semibold text-blue-600">
-                  <span>Browse Specialists</span>
-                  <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
-                </div>
-              </div>
+            <div className="inline-flex items-center gap-1.5 text-xs font-bold text-blue-600 uppercase tracking-wider mb-1">
+              <span>Verified Specialties</span>
             </div>
-          ))}
-        </div>
-      </section>
-
-      {/* 3. Featured Services (In INR ₹) */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-end justify-between mb-8">
-          <div>
-            <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Verified Service Listings</h2>
-            <p className="text-xs text-slate-500 mt-1">Directly book trusted professionals with transparent pricing in Rupees</p>
-          </div>
-          <button
-            onClick={() => onNavigate('browse')}
-            className="text-xs font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1 cursor-pointer"
-          >
-            <span>View Catalog</span>
-            <ChevronRight className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          {featuredServices.map((service) => (
-            <div
-              key={service.id}
-              className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs hover:shadow-md transition-all flex flex-col justify-between"
-            >
-              <div>
-                <div 
-                  className="h-44 overflow-hidden relative cursor-pointer"
-                  onClick={() => onNavigate('service-detail', { id: service.id })}
-                >
-                  <img
-                    src={service.image_url || '/src/assets/images/category_agri_rural_service_1792827856095.jpg'}
-                    alt={service.title}
-                    referrerPolicy="no-referrer"
-                    className="w-full h-full object-cover hover:scale-103 transition-transform duration-300"
-                  />
-                  <div className="absolute top-3 left-3 bg-white/95 backdrop-blur-xs px-2 py-0.5 rounded text-[11px] font-semibold text-slate-800">
-                    {service.category_name}
-                  </div>
-                </div>
-
-                <div className="p-4 space-y-2.5">
-                  <div className="flex items-center justify-between text-xs text-slate-500">
-                    <div className="flex items-center gap-1 text-slate-700">
-                      <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
-                      <span className="font-bold font-mono tabular-nums">{service.rating_avg || 5.0}</span>
-                      <span className="text-slate-400">({service.reviews_count || 1})</span>
-                    </div>
-                    <span className="text-[11px] text-slate-500">{service.duration_minutes} min</span>
-                  </div>
-
-                  <h3
-                    onClick={() => onNavigate('service-detail', { id: service.id })}
-                    className="font-bold text-slate-900 text-sm hover:text-blue-600 transition-colors cursor-pointer line-clamp-1"
-                  >
-                    {service.title}
-                  </h3>
-
-                  <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
-                    {service.description}
-                  </p>
-
-                  <div 
-                    onClick={() => onNavigate('provider-detail', { id: service.provider_id })}
-                    className="pt-2 flex items-center gap-2 cursor-pointer group"
-                  >
-                    <img
-                      src={service.provider_avatar || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80'}
-                      alt={service.provider_name}
-                      referrerPolicy="no-referrer"
-                      className="w-6 h-6 rounded-full object-cover border border-slate-200"
-                    />
-                    <span className="text-xs text-slate-600 group-hover:text-blue-600 truncate">
-                      {service.provider_business || service.provider_name}
-                    </span>
-                    {service.provider_verified === 1 && (
-                      <CheckCircle className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="p-4 pt-3 border-t border-slate-100 flex items-center justify-between">
-                <div>
-                  <span className="text-base font-bold text-slate-900 font-mono tabular-nums">₹{service.price}</span>
-                  <span className="text-[10px] text-slate-500 ml-1">/{service.pricing_unit}</span>
-                </div>
-
-                <button
-                  onClick={() => onOpenBooking(service)}
-                  className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-xs"
-                >
-                  Book Slot
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* 4. Verified Indian Specialists Showcase */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="bg-slate-900 rounded-3xl p-6 sm:p-10 text-white">
-          <div className="max-w-2xl mb-8">
-            <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight">Meet Verified Master Craftsmen</h2>
-            <p className="text-xs sm:text-sm text-slate-400 mt-2 leading-relaxed">
-              Every professional undergoes identity verification with Aadhaar records, trade certifications, and quality audits before joining the marketplace.
+            <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+              Popular Service Categories
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-500 mt-1 max-w-xl">
+              Professional, certified technicians ready to visit your home with upfront pricing and verified reviews.
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            {providers.map((pro: any) => (
+          <button
+            onClick={() => onNavigate('categories')}
+            className="text-xs sm:text-sm font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1.5 cursor-pointer self-start sm:self-auto"
+          >
+            <span>Explore All Categories</span>
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* 6 Category Image Cards Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          {displayedCategories.map((cat) => (
+            <div
+              key={cat.id}
+              onClick={() => onNavigate('browse', { category: cat.slug })}
+              className="group bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-xs hover:shadow-xl transition-all duration-300 cursor-pointer flex flex-col justify-between"
+            >
+              <div>
+                <div className="h-52 overflow-hidden relative bg-slate-100">
+                  <img
+                    src={cat.image_url}
+                    alt={cat.name}
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-slate-950/20 to-transparent"></div>
+                  <div className="absolute bottom-4 left-4 right-4 text-white">
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-white/20 backdrop-blur-md text-white mb-1.5 inline-block">
+                      {cat.sector || 'HOME'}
+                    </span>
+                    <h3 className="text-lg font-bold tracking-tight text-white group-hover:text-blue-200 transition-colors">
+                      {cat.name}
+                    </h3>
+                  </div>
+                </div>
+
+                <div className="p-5">
+                  <p className="text-xs text-slate-600 leading-relaxed line-clamp-2">
+                    {cat.description}
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-5 pt-0 flex items-center justify-between text-xs font-bold text-blue-600 border-t border-slate-100 mt-2">
+                <span>View Matching Specialists</span>
+                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* 3. Featured AC Repair & Maintenance Section (User Highlight Request) */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="bg-gradient-to-br from-blue-900 via-indigo-950 to-slate-900 rounded-3xl p-6 sm:p-10 text-white shadow-xl overflow-hidden relative">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+            <div className="lg:col-span-7 space-y-5">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/20 text-blue-200 text-xs font-semibold border border-blue-400/30">
+                <Wind className="w-3.5 h-3.5 text-blue-300" />
+                <span>Specialized HVAC & Cooling Solutions</span>
+              </div>
+
+              <h2 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold tracking-tight">
+                AC Repair & Maintenance Services
+              </h2>
+
+              <p className="text-xs sm:text-sm text-slate-300 leading-relaxed max-w-xl">
+                Beat the heat with certified air conditioning technicians. High-pressure jet coil wash, anti-microbial foam cleaning, gas leakage detection, and PCB circuit repair with 90-day service warranty.
+              </p>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-2">
+                <div className="p-3 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10">
+                  <p className="text-base sm:text-lg font-bold text-white">₹599</p>
+                  <p className="text-[11px] text-slate-300">Jet Foam Cleaning</p>
+                </div>
+                <div className="p-3 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10">
+                  <p className="text-base sm:text-lg font-bold text-white">45 Mins</p>
+                  <p className="text-[11px] text-slate-300">Fast Doorstep Service</p>
+                </div>
+                <div className="p-3 rounded-2xl bg-white/10 backdrop-blur-md border border-white/10 col-span-2 sm:col-span-1">
+                  <p className="text-base sm:text-lg font-bold text-white">90 Days</p>
+                  <p className="text-[11px] text-slate-300">Cooling Warranty</p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3 pt-3">
+                <button
+                  type="button"
+                  onClick={() => onNavigate('browse', { category: 'ac-repair-maintenance' })}
+                  className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-xs sm:text-sm shadow-md cursor-pointer transition-colors inline-flex items-center gap-2"
+                >
+                  <span>Book AC Service Now</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={onOpenAiAssistant}
+                  className="px-5 py-3 bg-white/10 hover:bg-white/20 text-white border border-white/20 rounded-xl font-bold text-xs sm:text-sm cursor-pointer transition-colors inline-flex items-center gap-2"
+                >
+                  <Sparkles className="w-4 h-4 text-blue-300" />
+                  <span>Diagnose AC Issues</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="lg:col-span-5">
+              <div className="rounded-2xl overflow-hidden border border-white/20 shadow-2xl relative h-72 sm:h-80">
+                <img
+                  src="https://images.unsplash.com/photo-1621905251189-08b45d6a269e?w=800&auto=format&fit=crop&q=80"
+                  alt="Technician performing AC jet pump cleaning"
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-cover"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent flex items-end p-4">
+                  <div className="text-white text-xs">
+                    <p className="font-bold">Split & Window AC Jet Cleaning</p>
+                    <p className="text-slate-300 text-[11px]">Daikin · Voltas · LG · Blue Star · Carrier</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* 4. Featured Professionals (Actual Approved Records from Database) */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+          <div>
+            <div className="inline-flex items-center gap-1.5 text-xs font-bold text-blue-600 uppercase tracking-wider mb-1">
+              <span>Audited Specialists</span>
+            </div>
+            <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+              Featured Local Professionals
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-500 mt-1 max-w-xl">
+              Meet top-rated service partners with verified trade experience, transparent rates, and real customer reviews.
+            </p>
+          </div>
+
+          <button
+            onClick={() => onNavigate('browse', { sort: 'rating' })}
+            className="text-xs sm:text-sm font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1.5 cursor-pointer self-start sm:self-auto"
+          >
+            <span>View All Professionals</span>
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Real Provider Cards */}
+        {providers.length === 0 ? (
+          <div className="bg-white rounded-3xl border border-slate-200 p-12 text-center space-y-3">
+            <Users className="w-10 h-10 text-slate-300 mx-auto" />
+            <h3 className="text-sm font-bold text-slate-800">No verified professionals listed yet</h3>
+            <p className="text-xs text-slate-500 max-w-md mx-auto">
+              Be the first certified professional to join ServiceHub India in your district!
+            </p>
+            <button
+              onClick={() => onOpenAuth('SERVICE_PROVIDER')}
+              className="mt-2 px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold"
+            >
+              Join as Service Professional
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            {providers.slice(0, 4).map((pro) => (
               <div
-                key={pro.id}
-                onClick={() => onNavigate('provider-detail', { id: pro.id })}
-                className="bg-slate-800/80 border border-slate-700 rounded-2xl p-5 hover:bg-slate-800 transition-all cursor-pointer flex flex-col justify-between"
+                key={pro.user_id}
+                className="bg-white rounded-3xl border border-slate-200 p-5 shadow-xs hover:shadow-lg transition-all flex flex-col justify-between group"
               >
-                <div className="space-y-3">
-                  <div className="flex items-center gap-3">
+                <div className="space-y-4">
+                  {/* Avatar and Verification */}
+                  <div className="flex items-start justify-between">
                     <img
-                      src={pro.avatar_url || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80'}
-                      alt={pro.name}
+                      src={pro.avatar_url || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80'}
+                      alt={pro.business_name}
                       referrerPolicy="no-referrer"
-                      className="w-12 h-12 rounded-xl object-cover border border-slate-600"
+                      className="w-14 h-14 rounded-2xl object-cover border border-slate-200 shadow-2xs group-hover:scale-105 transition-transform"
                     />
-                    <div>
-                      <div className="flex items-center gap-1">
-                        <h4 className="font-bold text-sm text-white">{pro.name}</h4>
-                        {pro.verified_badge === 1 && (
-                          <CheckCircle className="w-3.5 h-3.5 text-blue-400" />
-                        )}
-                      </div>
-                      <p className="text-[11px] text-slate-400 truncate max-w-[140px]">{pro.business_name}</p>
+                    {pro.verified_badge === 1 && (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 text-[10px] font-bold border border-emerald-200">
+                        <BadgeCheck className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Verified</span>
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Business and Category Info */}
+                  <div className="space-y-1">
+                    <h3 className="font-extrabold text-sm text-slate-900 group-hover:text-blue-600 transition-colors line-clamp-1">
+                      {pro.business_name}
+                    </h3>
+                    <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                      <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span className="truncate">{pro.service_area || `${pro.city}, ${pro.district}`}</span>
                     </div>
                   </div>
 
-                  <p className="text-xs text-slate-300 line-clamp-3 leading-relaxed">
-                    {pro.bio}
-                  </p>
+                  {/* Rating & Experience */}
+                  <div className="flex items-center justify-between text-xs py-2 border-y border-slate-100">
+                    <div className="flex items-center gap-1 font-bold text-slate-800">
+                      <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
+                      <span>{pro.rating_avg || 5.0}</span>
+                      <span className="text-slate-400 font-normal">({pro.reviews_count || 1})</span>
+                    </div>
+                    <div className="text-slate-500 text-[11px] font-medium">
+                      {pro.experience_years} yrs exp
+                    </div>
+                  </div>
+
+                  {/* Hourly Rate / Starting Price */}
+                  <div className="flex items-baseline justify-between text-xs">
+                    <span className="text-slate-400">Starting from</span>
+                    <span className="text-slate-900 font-bold text-sm">
+                      ₹{pro.hourly_rate} <span className="text-xs text-slate-400 font-normal">/ visit</span>
+                    </span>
+                  </div>
                 </div>
 
-                <div className="pt-4 mt-4 border-t border-slate-700/80 flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-1 text-amber-400 font-semibold font-mono">
-                    <Star className="w-3.5 h-3.5 fill-amber-400" />
-                    <span>{pro.rating_avg || 5.0}</span>
-                    <span className="text-slate-400 font-normal">({pro.reviews_count || 0})</span>
-                  </div>
-                  <span className="text-slate-300 font-mono">₹{pro.hourly_rate}/hr</span>
+                {/* Action Buttons */}
+                <div className="grid grid-cols-2 gap-2 mt-5 pt-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('provider-detail', { id: pro.user_id })}
+                    className="w-full py-2 px-2 text-center text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+                  >
+                    View Profile
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('browse', { providerId: pro.user_id })}
+                    className="w-full py-2 px-2 text-center text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition-colors cursor-pointer shadow-2xs"
+                  >
+                    Book Now
+                  </button>
                 </div>
               </div>
             ))}
           </div>
+        )}
+      </section>
+
+      {/* 5. How It Works (Simple 3 Steps with clean icons) */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="bg-white rounded-3xl border border-slate-200 p-8 sm:p-12 shadow-xs space-y-10">
+          <div className="text-center space-y-2 max-w-xl mx-auto">
+            <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+              How ServiceHub Works
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-500">
+              Get quality service delivered to your doorstep in 3 effortless steps.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 relative">
+            {/* Step 1 */}
+            <div className="flex flex-col items-center text-center space-y-3 relative group">
+              <div className="w-16 h-16 rounded-2xl bg-blue-50 border border-blue-200/80 text-blue-600 flex items-center justify-center shadow-xs group-hover:scale-105 transition-transform">
+                <Search className="w-7 h-7" />
+              </div>
+              <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-mono font-bold">
+                Step 1
+              </span>
+              <h3 className="font-extrabold text-base text-slate-900">Choose a Service</h3>
+              <p className="text-xs text-slate-500 leading-relaxed max-w-xs">
+                Browse our verified catalog or describe your problem to our Gemini-powered AI diagnostic assistant.
+              </p>
+            </div>
+
+            {/* Step 2 */}
+            <div className="flex flex-col items-center text-center space-y-3 relative group">
+              <div className="w-16 h-16 rounded-2xl bg-blue-50 border border-blue-200/80 text-blue-600 flex items-center justify-center shadow-xs group-hover:scale-105 transition-transform">
+                <Users className="w-7 h-7" />
+              </div>
+              <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-mono font-bold">
+                Step 2
+              </span>
+              <h3 className="font-extrabold text-base text-slate-900">Select a Suitable Professional</h3>
+              <p className="text-xs text-slate-500 leading-relaxed max-w-xs">
+                Compare verified specialist credentials, upfront transparent prices, service areas, and authentic customer ratings.
+              </p>
+            </div>
+
+            {/* Step 3 */}
+            <div className="flex flex-col items-center text-center space-y-3 relative group">
+              <div className="w-16 h-16 rounded-2xl bg-blue-50 border border-blue-200/80 text-blue-600 flex items-center justify-center shadow-xs group-hover:scale-105 transition-transform">
+                <CalendarCheck className="w-7 h-7" />
+              </div>
+              <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-mono font-bold">
+                Step 3
+              </span>
+              <h3 className="font-extrabold text-base text-slate-900">Book and Track Your Service</h3>
+              <p className="text-xs text-slate-500 leading-relaxed max-w-xs">
+                Select your preferred appointment slot and follow real-time progress on your live milestone tracker.
+              </p>
+            </div>
+          </div>
         </div>
       </section>
 
-      {/* 5. How It Works Section */}
+      {/* 6. AI Service Assistant Introduction Banner */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="text-center max-w-2xl mx-auto mb-12">
-          <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">How ServiceHub Operates</h2>
-          <p className="text-xs sm:text-sm text-slate-500 mt-2">
-            Transparent, direct on-demand service across India.
+        <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 text-white rounded-3xl p-8 sm:p-10 shadow-lg flex flex-col md:flex-row items-center justify-between gap-6">
+          <div className="space-y-2 max-w-2xl">
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/20 text-white text-xs font-semibold backdrop-blur-md">
+              <Sparkles className="w-3.5 h-3.5 animate-pulse" />
+              <span>Smart Maintenance Problem Diagnoser</span>
+            </div>
+            <h3 className="text-2xl sm:text-3xl font-extrabold text-white">
+              Not sure what service you need?
+            </h3>
+            <p className="text-xs sm:text-sm text-blue-100 leading-relaxed">
+              Tell our AI Service Assistant what happened (e.g. &quot;My AC is blowing warm air&quot; or &quot;bathroom pipe is making a loud banging sound&quot;). It immediately identifies the technical issue, offers safety precautions, and finds verified local professionals.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onOpenAiAssistant}
+            className="px-6 py-3.5 bg-white text-blue-700 hover:bg-blue-50 rounded-xl font-extrabold text-xs sm:text-sm shadow-md cursor-pointer transition-transform hover:scale-105 inline-flex items-center gap-2 shrink-0 whitespace-nowrap"
+          >
+            <Sparkles className="w-4 h-4 text-blue-600" />
+            <span>Launch AI Assistant</span>
+          </button>
+        </div>
+      </section>
+
+      {/* 7. Why Choose ServiceHub */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
+        <div className="text-center space-y-2 max-w-xl mx-auto">
+          <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+            Why Choose ServiceHub
+          </h2>
+          <p className="text-xs sm:text-sm text-slate-500">
+            A marketplace engineered for trustworthiness, quality, and complete transparency.
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-base font-mono">
-              01
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-2xs space-y-3">
+            <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+              <BadgeCheck className="w-6 h-6" />
             </div>
-            <h3 className="font-bold text-base text-slate-900">Search by District or PIN Code</h3>
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Find nearby specialists in your taluka, village or city ward. Compare rates, verified customer reviews, and service modes.
+            <h3 className="font-extrabold text-sm text-slate-900">Aadhaar & License Verified</h3>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Every provider is vetted with identity checks, trade certifications, and in-person skill evaluation.
             </p>
           </div>
 
-          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-base font-mono">
-              02
+          <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-2xs space-y-3">
+            <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center">
+              <Award className="w-6 h-6" />
             </div>
-            <h3 className="font-bold text-base text-slate-900">Select Date & Preferred Window</h3>
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Book a confirmed morning, afternoon or evening slot. Transactional concurrency guards prevent overlapping bookings.
+            <h3 className="font-extrabold text-sm text-slate-900">Upfront Transparent Pricing</h3>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Standardized rate cards in Indian Rupees (INR) with zero hidden charges or unexpected add-ons.
             </p>
           </div>
 
-          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-base font-mono">
-              03
+          <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-2xs space-y-3">
+            <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+              <Clock className="w-6 h-6" />
             </div>
-            <h3 className="font-bold text-base text-slate-900">Pay on Completion (Cash/UPI)</h3>
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Specialist arrives on-site or handles at workshop. Pay upon completion using Cash or UPI (GPay/PhonePe), then post a verified review.
+            <h3 className="font-extrabold text-sm text-slate-900">Real-time Live Milestones</h3>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              WebSocket-synchronized live tracking keeps you updated from request confirmation to job completion.
+            </p>
+          </div>
+
+          <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-2xs space-y-3">
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center">
+              <ShieldCheck className="w-6 h-6" />
+            </div>
+            <h3 className="font-extrabold text-sm text-slate-900">90-Day Service Warranty</h3>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Complete peace of mind with our dedicated customer protection guarantee and verified feedback loop.
             </p>
           </div>
         </div>
       </section>
 
-      {/* 6. Become a Pro Banner */}
+      {/* 8. Frequently Asked Questions */}
+      <section className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
+        <div className="text-center space-y-2">
+          <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+            Frequently Asked Questions
+          </h2>
+          <p className="text-xs sm:text-sm text-slate-500">
+            Everything you need to know about booking, verified specialists, and guarantees.
+          </p>
+        </div>
+
+        <div className="space-y-3">
+          {[
+            {
+              q: 'How does ServiceHub verify service professionals?',
+              a: 'Every specialist undergoes government Aadhaar identity verification, trade license auditing, and background vetting before their listings are approved by platform administrators.'
+            },
+            {
+              q: 'Can I cancel or reschedule my service appointment?',
+              a: 'Yes, you can easily cancel or reschedule your booking directly from your Customer Dashboard while the status is in Pending or Accepted state with zero cancellation fee.'
+            },
+            {
+              q: 'What payment methods are supported?',
+              a: 'We support all major Indian payment options including UPI (Google Pay, PhonePe, Paytm), Net Banking, and Cash on Delivery / Post-Service payment.'
+            },
+            {
+              q: 'How does the Gemini AI Service Assistant work?',
+              a: 'Our AI Service Assistant analyzes your plain text description of a problem, diagnoses probable causes, gives immediate safety guidance, and directly matches verified professionals in your area.'
+            }
+          ].map((item, idx) => (
+            <div
+              key={idx}
+              className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-2xs transition-all"
+            >
+              <button
+                type="button"
+                onClick={() => setOpenFaq(openFaq === idx ? null : idx)}
+                className="w-full text-left p-4 sm:p-5 flex items-center justify-between text-xs sm:text-sm font-bold text-slate-900 hover:text-blue-600 cursor-pointer"
+              >
+                <span>{item.q}</span>
+                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${openFaq === idx ? 'rotate-180 text-blue-600' : ''}`} />
+              </button>
+              {openFaq === idx && (
+                <div className="px-5 pb-5 text-xs text-slate-600 leading-relaxed border-t border-slate-100 pt-3">
+                  {item.a}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* 9. Final Booking Call to Action */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="bg-emerald-700 rounded-3xl p-8 sm:p-12 text-white flex flex-col md:flex-row items-center justify-between gap-6 shadow-xl shadow-emerald-700/10">
-          <div className="space-y-2 max-w-xl text-center md:text-left">
-            <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight">Are You a Skilled Specialist or Mistri?</h2>
-            <p className="text-xs sm:text-sm text-emerald-100 leading-relaxed">
-              Expand your earnings across towns and villages. Get verified with Aadhaar and start receiving direct customer bookings with zero commission middleman fees.
+        <div className="bg-slate-900 text-white rounded-3xl p-8 sm:p-12 text-center space-y-6 shadow-xl relative overflow-hidden">
+          <div className="space-y-2 max-w-xl mx-auto relative z-10">
+            <h2 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold tracking-tight">
+              Ready to get your household tasks done?
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
+              Book certified AC mechanics, plumbers, electricians, and cleaners across your city or taluka today.
             </p>
           </div>
-          <div className="flex items-center gap-3 shrink-0">
+
+          <div className="flex flex-wrap items-center justify-center gap-3 relative z-10">
             <button
-              onClick={() => onOpenAuth('SERVICE_PROVIDER')}
-              className="px-6 py-3 bg-white text-emerald-900 hover:bg-emerald-50 font-bold rounded-xl text-xs transition-colors shadow-sm cursor-pointer whitespace-nowrap"
+              type="button"
+              onClick={() => onNavigate('browse')}
+              className="px-8 py-3.5 bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-lg shadow-blue-600/30 transition-all cursor-pointer"
             >
-              Join ServiceHub Partner Network
+              Book a Service Now
+            </button>
+            <button
+              type="button"
+              onClick={() => onOpenAuth('SERVICE_PROVIDER')}
+              className="px-6 py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs sm:text-sm rounded-xl transition-all cursor-pointer"
+            >
+              Become a Service Partner
             </button>
           </div>
         </div>

@@ -8,10 +8,81 @@ export type BookingStatus =
   | 'PENDING' 
   | 'ACCEPTED' 
   | 'CONFIRMED' 
+  | 'ON_THE_WAY'
   | 'IN_PROGRESS' 
+  | 'AWAITING_PAYMENT'
   | 'COMPLETED' 
   | 'CANCELLED' 
   | 'REJECTED';
+
+export type PaymentStatus = 'NOT_CREATED' | 'PENDING' | 'PROCESSING' | 'PAID' | 'FAILED' | 'EXPIRED';
+
+export interface BillBreakdown {
+  baseAmount: number;
+  taxRatePercent: number;
+  taxAmount: number;
+  platformFee: number;
+  totalAmount: number;
+  providerAmount: number;
+}
+
+export interface PaymentRecord {
+  id: number;
+  booking_id: number;
+  gateway_order_id: string;
+  gateway_payment_id?: string;
+  gateway_qr_id?: string;
+  amount: number;
+  base_amount: number;
+  tax_amount: number;
+  platform_fee: number;
+  provider_amount: number;
+  currency: string;
+  status: PaymentStatus;
+  qr_string: string;
+  qr_data_url?: string;
+  expires_at: string;
+  paid_at?: string;
+  payment_method?: string;
+  bank_reference?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaymentReceipt {
+  receipt_id: string;
+  booking_id: number;
+  service_title: string;
+  service_mode: string;
+  booking_date: string;
+  time_slot: string;
+  customer_name: string;
+  customer_email?: string;
+  customer_phone?: string;
+  provider_name: string;
+  provider_business?: string;
+  provider_phone?: string;
+  payment_status: PaymentStatus;
+  paid_at: string;
+  payment_method: string;
+  bank_reference?: string;
+  breakdown: BillBreakdown;
+}
+
+export interface BookingStatusHistory {
+  id: number;
+  booking_id: number;
+  status: BookingStatus;
+  notes?: string;
+  changed_by_user_id?: number;
+  created_at: string;
+}
+
+export interface RealtimeEvent {
+  type: 'BOOKING_STATUS_CHANGED' | 'NEW_BOOKING_REQUEST' | 'EMERGENCY_UPDATE' | 'PAYMENT_RECEIVED';
+  data: any;
+  timestamp: string;
+}
 
 export interface User {
   id: number;
@@ -41,8 +112,13 @@ export interface ProviderProfile {
   aadhaar_verified: number; // 1 or 0
   trade_license_no?: string;
   skills: string[];
+  name?: string;
+  avatar_url?: string;
   rating_avg?: number;
   reviews_count?: number;
+  latitude?: number;
+  longitude?: number;
+  distance_km?: number;
 }
 
 export interface Category {
@@ -82,6 +158,9 @@ export interface ServiceListing {
   provider_city?: string;
   provider_district?: string;
   provider_state?: string;
+  provider_latitude?: number;
+  provider_longitude?: number;
+  distance_km?: number;
   category_name?: string;
   category_slug?: string;
   category_sector?: string;
@@ -107,6 +186,7 @@ export interface Booking {
   payment_status: 'PENDING' | 'PAID';
   created_at: string;
   updated_at: string;
+  timeline?: BookingStatusHistory[];
   // joined fields:
   service_title?: string;
   service_image?: string;
@@ -117,6 +197,7 @@ export interface Booking {
   provider_business?: string;
   provider_phone?: string;
   has_reviewed?: boolean;
+  payment_record?: PaymentRecord;
 }
 
 export interface Review {
@@ -193,4 +274,42 @@ export interface EmergencyRequest {
   resolved_at?: string;
   updated_at?: string;
 }
+
+export interface AIAnalysisResponse {
+  diagnostic: string;
+  safetyWarning: string | null;
+  urgencyLevel: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+  recommendedCategory: string;
+  recommendedCategorySlug: string;
+  searchKeywords: string[];
+  recommendedAction: string;
+  matchingServices: ServiceListing[];
+  matchingProviders: ProviderProfile[];
+}
+
+export interface AdminAnalyticsData {
+  range: string;
+  metrics: {
+    totalBookings: number;
+    completedBookings: number;
+    totalVolume: number;
+    avgRating: number;
+    activeProviders: number;
+    openEmergencies: number;
+  };
+  statusDistribution: { status: string; count: number }[];
+  categoryDistribution: { category_name: string; slug: string; bookings_count: number; total_revenue: number }[];
+  dailyTrends: { day: string; bookings: number; revenue: number }[];
+  topProviders: {
+    id: number;
+    name: string;
+    business_name: string;
+    city: string;
+    district: string;
+    completed_count: number;
+    rating_avg: number;
+    total_earnings: number;
+  }[];
+}
+
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../lib/api.js';
-import { AdminStats, Category, Booking, EmergencyRequest } from '../types.js';
+import { AdminStats, Category, Booking, EmergencyRequest, AdminAnalyticsData } from '../types.js';
 import { 
   Users, 
   Briefcase, 
@@ -16,17 +16,27 @@ import {
   Clock,
   BadgeCheck,
   ShieldAlert,
-  Phone
+  Phone,
+  BarChart3,
+  TrendingUp,
+  PieChart,
+  Activity,
+  ArrowRight
 } from 'lucide-react';
 
 export const AdminDashboard: React.FC = () => {
   const [stats, setStats] = useState<AdminStats | null>(null);
+  const [analyticsData, setAnalyticsData] = useState<AdminAnalyticsData | null>(null);
+  const [analyticsRange, setAnalyticsRange] = useState<string>('30d');
+  const [loadingAnalytics, setLoadingAnalytics] = useState<boolean>(false);
   const [providers, setProviders] = useState<any[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
+  const [services, setServices] = useState<any[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [emergencyRequests, setEmergencyRequests] = useState<EmergencyRequest[]>([]);
   const [emergencyFilter, setEmergencyFilter] = useState<string>('ALL');
-  const [activeTab, setActiveTab] = useState<'PROVIDERS' | 'EMERGENCY' | 'CATEGORIES' | 'BOOKINGS'>('PROVIDERS');
+  const [activeTab, setActiveTab] = useState<'ANALYTICS' | 'PROVIDERS' | 'USERS' | 'SERVICES' | 'EMERGENCY' | 'CATEGORIES' | 'BOOKINGS'>('ANALYTICS');
   const [loading, setLoading] = useState(true);
 
   // New Category Modal
@@ -37,30 +47,94 @@ export const AdminDashboard: React.FC = () => {
   const [catSector, setCatSector] = useState<'HOME' | 'AGRI_RURAL' | 'ELECTRONICS' | 'COMMUNITY'>('AGRI_RURAL');
   const [catImage, setCatImage] = useState('/src/assets/images/category_agri_rural_service_1792827856095.jpg');
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    loadAllAdminData();
+    loadAllAdminData(true);
+    const interval = setInterval(() => {
+      loadAllAdminData(false);
+    }, 10000);
+    return () => clearInterval(interval);
   }, []);
 
-  const loadAllAdminData = async () => {
-    setLoading(true);
+  const loadAllAdminData = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
-      const [s, p, c, b, e] = await Promise.all([
+      const [s, p, c, b, e, u, serv] = await Promise.all([
         api.admin.getStats(),
         api.admin.getProviders(),
         api.categories.getAll(),
         api.admin.getBookings(),
         api.emergency.getAll(),
+        api.admin.getUsers(),
+        api.admin.getServices(),
       ]);
       setStats(s);
       setProviders(p);
       setCategories(c);
       setBookings(b);
       setEmergencyRequests(e);
+      setUsers(u);
+      setServices(serv);
+      await loadAnalytics(analyticsRange);
     } catch (err) {
       console.error(err);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
+    }
+  };
+
+  const loadAnalytics = async (range: string = analyticsRange) => {
+    setLoadingAnalytics(true);
+    try {
+      const data = await api.admin.getAnalytics(range);
+      setAnalyticsData(data);
+    } catch (err) {
+      console.error('Failed to load analytics:', err);
+    } finally {
+      setLoadingAnalytics(false);
+    }
+  };
+
+  const handleRangeChange = (r: string) => {
+    setAnalyticsRange(r);
+    loadAnalytics(r);
+  };
+
+  const handleToggleService = async (id: number, currentStatus: string) => {
+    try {
+      const next = currentStatus === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
+      await api.admin.updateServiceStatus(id, next);
+      setActionMsg(`Service listing #${id} status changed to ${next}.`);
+      setTimeout(() => setActionMsg(null), 3000);
+      await loadAllAdminData(false);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to update service.');
+      setTimeout(() => setErrorMsg(null), 4000);
+    }
+  };
+
+  const handleDeleteService = async (id: number) => {
+    try {
+      await api.admin.deleteService(id);
+      setActionMsg(`Service listing #${id} removed from marketplace.`);
+      setTimeout(() => setActionMsg(null), 3000);
+      await loadAllAdminData(false);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to delete service.');
+      setTimeout(() => setErrorMsg(null), 4000);
+    }
+  };
+
+  const handleAdminUpdateBooking = async (id: number, status: any) => {
+    try {
+      await api.admin.updateBookingStatus(id, status);
+      setActionMsg(`Booking #${id} status changed to ${status}.`);
+      setTimeout(() => setActionMsg(null), 3000);
+      await loadAllAdminData(false);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to update booking.');
+      setTimeout(() => setErrorMsg(null), 4000);
     }
   };
 
@@ -69,9 +143,10 @@ export const AdminDashboard: React.FC = () => {
       await api.admin.verifyProvider(id, status);
       setActionMsg(`Provider #${id} status changed to ${status}.`);
       setTimeout(() => setActionMsg(null), 3000);
-      await loadAllAdminData();
+      await loadAllAdminData(false);
     } catch (err: any) {
-      alert(err.message || 'Action failed.');
+      setErrorMsg(err.message || 'Action failed.');
+      setTimeout(() => setErrorMsg(null), 4000);
     }
   };
 
@@ -90,9 +165,10 @@ export const AdminDashboard: React.FC = () => {
       setCatDesc('');
       setActionMsg('New category added successfully.');
       setTimeout(() => setActionMsg(null), 3000);
-      await loadAllAdminData();
+      await loadAllAdminData(false);
     } catch (err: any) {
-      alert(err.message || 'Failed to create category.');
+      setErrorMsg(err.message || 'Failed to create category.');
+      setTimeout(() => setErrorMsg(null), 4000);
     }
   };
 
@@ -122,6 +198,12 @@ export const AdminDashboard: React.FC = () => {
       {actionMsg && (
         <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 font-medium">
           {actionMsg}
+        </div>
+      )}
+
+      {errorMsg && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800 font-medium">
+          {errorMsg}
         </div>
       )}
 
@@ -183,6 +265,18 @@ export const AdminDashboard: React.FC = () => {
       {/* Nav Tabs */}
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-3 text-xs font-semibold text-slate-600">
         <button
+          onClick={() => {
+            setActiveTab('ANALYTICS');
+            loadAnalytics(analyticsRange);
+          }}
+          className={`px-4 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 ${
+            activeTab === 'ANALYTICS' ? 'bg-blue-600 text-white shadow-xs' : 'hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <BarChart3 className="w-3.5 h-3.5" />
+          <span>Intelligence & Analytics</span>
+        </button>
+        <button
           onClick={() => setActiveTab('PROVIDERS')}
           className={`px-4 py-2 rounded-xl transition-all cursor-pointer ${
             activeTab === 'PROVIDERS' ? 'bg-slate-900 text-white shadow-xs' : 'hover:text-slate-900 hover:bg-slate-100'
@@ -191,18 +285,20 @@ export const AdminDashboard: React.FC = () => {
           Specialist Verification Queue ({providers.length})
         </button>
         <button
-          onClick={() => setActiveTab('EMERGENCY')}
-          className={`px-4 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 ${
-            activeTab === 'EMERGENCY' ? 'bg-red-600 text-white shadow-xs' : 'hover:text-red-700 hover:bg-red-50 text-red-600 border border-red-200'
+          onClick={() => setActiveTab('USERS')}
+          className={`px-4 py-2 rounded-xl transition-all cursor-pointer ${
+            activeTab === 'USERS' ? 'bg-slate-900 text-white shadow-xs' : 'hover:text-slate-900 hover:bg-slate-100'
           }`}
         >
-          <ShieldAlert className="w-3.5 h-3.5" />
-          <span>Emergency Requests ({emergencyRequests.length})</span>
-          {emergencyRequests.filter(r => r.status === 'OPEN').length > 0 && (
-            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-red-100 text-red-700 font-bold font-mono">
-              {emergencyRequests.filter(r => r.status === 'OPEN').length} Open
-            </span>
-          )}
+          User Accounts ({users.length})
+        </button>
+        <button
+          onClick={() => setActiveTab('SERVICES')}
+          className={`px-4 py-2 rounded-xl transition-all cursor-pointer ${
+            activeTab === 'SERVICES' ? 'bg-slate-900 text-white shadow-xs' : 'hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          Service Catalog ({services.length})
         </button>
         <button
           onClick={() => setActiveTab('CATEGORIES')}
@@ -218,9 +314,220 @@ export const AdminDashboard: React.FC = () => {
             activeTab === 'BOOKINGS' ? 'bg-slate-900 text-white shadow-xs' : 'hover:text-slate-900 hover:bg-slate-100'
           }`}
         >
-          All Marketplace Bookings ({bookings.length})
+          Marketplace Bookings ({bookings.length})
+        </button>
+        <button
+          onClick={() => setActiveTab('EMERGENCY')}
+          className={`px-4 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 ${
+            activeTab === 'EMERGENCY' ? 'bg-red-600 text-white shadow-xs' : 'hover:text-red-700 hover:bg-red-50 text-red-600 border border-red-200'
+          }`}
+        >
+          <ShieldAlert className="w-3.5 h-3.5" />
+          <span>Emergency Requests ({emergencyRequests.length})</span>
+          {emergencyRequests.filter(r => r.status === 'OPEN').length > 0 && (
+            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-red-100 text-red-700 font-bold font-mono">
+              {emergencyRequests.filter(r => r.status === 'OPEN').length} Open
+            </span>
+          )}
         </button>
       </div>
+
+      {/* TAB 0: ANALYTICS & INTELLIGENCE SUITE */}
+      {activeTab === 'ANALYTICS' && (
+        <div className="space-y-6">
+          {/* Header & Date Range Selector */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <div className="space-y-0.5">
+              <h3 className="font-extrabold text-slate-900 text-sm flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-blue-600" />
+                <span>Marketplace Performance & Analytics Engine</span>
+              </h3>
+              <p className="text-xs text-slate-500">
+                Aggregated database-backed revenue, booking fulfillment rates, and top verified specialists.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-bold text-slate-600">
+              {[
+                { id: '7d', label: 'Last 7 Days' },
+                { id: '30d', label: 'Last 30 Days' },
+                { id: '90d', label: 'Last 90 Days' },
+                { id: 'all', label: 'All Time' },
+              ].map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => handleRangeChange(r.id)}
+                  className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                    analyticsRange === r.id
+                      ? 'bg-white text-blue-700 shadow-xs'
+                      : 'hover:text-slate-900'
+                  }`}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {loadingAnalytics ? (
+            <div className="py-16 text-center text-xs text-slate-400">Loading marketplace analytics...</div>
+          ) : analyticsData ? (
+            <>
+              {/* Range KPIs */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+                <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-1">
+                  <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Gross Service Volume</span>
+                  <p className="text-2xl font-extrabold text-emerald-600 font-mono">
+                    ₹{analyticsData.metrics.totalVolume.toLocaleString()}
+                  </p>
+                  <span className="text-[11px] text-slate-500">Fulfillments in {analyticsRange}</span>
+                </div>
+
+                <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-1">
+                  <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Total Bookings</span>
+                  <p className="text-2xl font-extrabold text-slate-900 font-mono">
+                    {analyticsData.metrics.totalBookings}
+                  </p>
+                  <span className="text-[11px] text-slate-500">{analyticsData.metrics.completedBookings} completed</span>
+                </div>
+
+                <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-1">
+                  <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Verified Specialists</span>
+                  <p className="text-2xl font-extrabold text-blue-600 font-mono">
+                    {analyticsData.metrics.activeProviders}
+                  </p>
+                  <span className="text-[11px] text-slate-500">Active approved profiles</span>
+                </div>
+
+                <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-1">
+                  <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Customer Rating</span>
+                  <p className="text-2xl font-extrabold text-amber-500 font-mono flex items-center gap-1">
+                    <Star className="w-5 h-5 fill-amber-400 text-amber-400" />
+                    <span>{analyticsData.metrics.avgRating} / 5.0</span>
+                  </p>
+                  <span className="text-[11px] text-slate-500">Average review score</span>
+                </div>
+              </div>
+
+              {/* Status Breakdown & Category Volume Grid */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Status Breakdown */}
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4 text-xs">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                    <h4 className="font-extrabold text-slate-900 text-sm flex items-center gap-2">
+                      <PieChart className="w-4 h-4 text-blue-600" />
+                      <span>Fulfillment Status Distribution</span>
+                    </h4>
+                    <span className="text-[11px] text-slate-400">Total: {analyticsData.metrics.totalBookings}</span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {analyticsData.statusDistribution.map((item) => {
+                      const pct = analyticsData.metrics.totalBookings > 0
+                        ? Math.round((item.count / analyticsData.metrics.totalBookings) * 100)
+                        : 0;
+
+                      return (
+                        <div key={item.status} className="space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-semibold text-slate-700">{item.status}</span>
+                            <span className="font-mono text-slate-500">{item.count} bookings ({pct}%)</span>
+                          </div>
+                          <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all duration-500 ${
+                                item.status === 'COMPLETED' ? 'bg-emerald-500' :
+                                item.status === 'IN_PROGRESS' || item.status === 'ON_THE_WAY' ? 'bg-blue-600' :
+                                item.status === 'ACCEPTED' || item.status === 'CONFIRMED' ? 'bg-indigo-500' :
+                                item.status === 'PENDING' ? 'bg-amber-400' :
+                                'bg-slate-400'
+                              }`}
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Top Category Performance */}
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4 text-xs">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                    <h4 className="font-extrabold text-slate-900 text-sm flex items-center gap-2">
+                      <Activity className="w-4 h-4 text-blue-600" />
+                      <span>Category Volume & GMV</span>
+                    </h4>
+                    <span className="text-[11px] text-slate-400">{analyticsData.categoryDistribution.length} categories</span>
+                  </div>
+
+                  <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
+                    {analyticsData.categoryDistribution.map((cat) => (
+                      <div key={cat.slug} className="p-2.5 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-between">
+                        <div className="space-y-0.5">
+                          <p className="font-bold text-slate-900">{cat.category_name}</p>
+                          <span className="text-[11px] text-slate-500">{cat.bookings_count} bookings</span>
+                        </div>
+                        <div className="text-right">
+                          <p className="font-extrabold text-slate-900 font-mono">₹{cat.total_revenue.toLocaleString()}</p>
+                          <span className="text-[10px] text-emerald-600 font-semibold">Verified GMV</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Top Performing Specialists */}
+              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs text-xs">
+                <div className="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+                  <h4 className="font-extrabold text-slate-900 text-sm flex items-center gap-2">
+                    <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
+                    <span>Top Performing Service Partners</span>
+                  </h4>
+                  <span className="text-slate-500">Ranked by completed customer orders</span>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-100 text-[11px] uppercase tracking-wider text-slate-400 bg-slate-50/50">
+                        <th className="p-3.5 pl-5">Specialist & Business</th>
+                        <th className="p-3.5">Jurisdiction</th>
+                        <th className="p-3.5">Completed Jobs</th>
+                        <th className="p-3.5">Customer Rating</th>
+                        <th className="p-3.5 text-right pr-5">Total Volume</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {analyticsData.topProviders.map((pro) => (
+                        <tr key={pro.id} className="hover:bg-slate-50/80 transition-colors">
+                          <td className="p-3.5 pl-5">
+                            <p className="font-bold text-slate-900">{pro.business_name}</p>
+                            <span className="text-[11px] text-slate-500">{pro.name}</span>
+                          </td>
+                          <td className="p-3.5 text-slate-600">{pro.city || pro.district}</td>
+                          <td className="p-3.5 font-bold font-mono text-slate-800">{pro.completed_count}</td>
+                          <td className="p-3.5">
+                            <span className="inline-flex items-center gap-1 font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
+                              <Star className="w-3 h-3 fill-amber-400" />
+                              {pro.rating_avg}
+                            </span>
+                          </td>
+                          <td className="p-3.5 text-right pr-5 font-mono font-bold text-emerald-700">
+                            ₹{pro.total_earnings.toLocaleString()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          ) : null}
+        </div>
+      )}
 
       {/* TAB 1: PROVIDER VERIFICATION */}
       {activeTab === 'PROVIDERS' && (
@@ -361,7 +668,7 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             <button
-              onClick={loadAllAdminData}
+              onClick={() => { void loadAllAdminData(); }}
               className="text-xs text-blue-600 hover:underline cursor-pointer"
             >
               Refresh Table
@@ -497,11 +804,167 @@ export const AdminDashboard: React.FC = () => {
         </div>
       )}
 
+      {/* TAB: USERS MANAGEMENT */}
+      {activeTab === 'USERS' && (
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs text-xs">
+          <div className="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+            <h3 className="font-bold text-slate-900 text-sm">Platform Registered Users & Roles</h3>
+            <span className="text-[11px] text-slate-500 font-mono">{users.length} Total Registered</span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-slate-100 text-[11px] uppercase tracking-wider text-slate-400 bg-slate-50/50">
+                  <th className="p-3.5 pl-5">User</th>
+                  <th className="p-3.5">Email / Contact</th>
+                  <th className="p-3.5">Role</th>
+                  <th className="p-3.5">Location / Business</th>
+                  <th className="p-3.5">Bookings</th>
+                  <th className="p-3.5 pr-5">Registered</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {users.map((u) => (
+                  <tr key={u.id} className="hover:bg-slate-50/50 transition-colors">
+                    <td className="p-3.5 pl-5">
+                      <div className="flex items-center gap-2.5">
+                        <img
+                          src={u.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80'}
+                          alt={u.name}
+                          referrerPolicy="no-referrer"
+                          className="w-8 h-8 rounded-full object-cover border border-slate-200"
+                        />
+                        <div>
+                          <p className="font-bold text-slate-900">{u.name}</p>
+                          <span className="font-mono text-slate-400 text-[10px]">ID: #{u.id}</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="p-3.5">
+                      <p className="font-medium text-slate-800">{u.email}</p>
+                      <span className="text-[11px] text-slate-500 font-mono">{u.phone || 'No phone'}</span>
+                    </td>
+                    <td className="p-3.5">
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        u.role === 'ADMIN' ? 'bg-amber-100 text-amber-800 border border-amber-200' :
+                        u.role === 'SERVICE_PROVIDER' ? 'bg-blue-100 text-blue-800 border border-blue-200' :
+                        'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                      }`}>
+                        {u.role}
+                      </span>
+                    </td>
+                    <td className="p-3.5">
+                      {u.business_name ? (
+                        <div>
+                          <p className="font-semibold text-slate-800">{u.business_name}</p>
+                          <span className="text-[10px] text-slate-500">{u.district || u.city || 'District covered'}</span>
+                        </div>
+                      ) : (
+                        <span className="text-slate-400 italic">Individual Customer</span>
+                      )}
+                    </td>
+                    <td className="p-3.5 font-mono text-slate-700">
+                      {u.bookings_count}
+                    </td>
+                    <td className="p-3.5 pr-5 text-slate-500 font-mono text-[11px]">
+                      {new Date(u.created_at).toLocaleDateString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* TAB: SERVICES CATALOG MANAGEMENT */}
+      {activeTab === 'SERVICES' && (
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs text-xs">
+          <div className="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+            <h3 className="font-bold text-slate-900 text-sm">Marketplace Published Services & Moderation</h3>
+            <span className="text-[11px] text-slate-500 font-mono">{services.length} Listings Active</span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-slate-100 text-[11px] uppercase tracking-wider text-slate-400 bg-slate-50/50">
+                  <th className="p-3.5 pl-5">Service Title</th>
+                  <th className="p-3.5">Specialist & District</th>
+                  <th className="p-3.5">Category</th>
+                  <th className="p-3.5">Pricing</th>
+                  <th className="p-3.5">Status</th>
+                  <th className="p-3.5 pr-5 text-right">Moderation Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {services.map((s) => (
+                  <tr key={s.id} className="hover:bg-slate-50/50 transition-colors">
+                    <td className="p-3.5 pl-5">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono text-slate-400 text-[11px]">#{s.id}</span>
+                          <span className="font-bold text-slate-900">{s.title}</span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 truncate max-w-xs">{s.description}</p>
+                      </div>
+                    </td>
+                    <td className="p-3.5">
+                      <p className="font-semibold text-slate-800">{s.provider_business || s.provider_name}</p>
+                      <span className="text-[10px] text-slate-400">{s.provider_district || 'Local area'}</span>
+                    </td>
+                    <td className="p-3.5">
+                      <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-medium text-[11px]">
+                        {s.category_name}
+                      </span>
+                    </td>
+                    <td className="p-3.5 font-mono">
+                      <span className="font-bold text-slate-900">₹{s.price}</span>
+                      <span className="text-slate-400 text-[10px]"> / {s.pricing_unit}</span>
+                    </td>
+                    <td className="p-3.5">
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        s.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'
+                      }`}>
+                        {s.status}
+                      </span>
+                    </td>
+                    <td className="p-3.5 pr-5 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => handleToggleService(s.id, s.status)}
+                          className={`px-2.5 py-1 rounded-lg font-semibold cursor-pointer text-[11px] ${
+                            s.status === 'ACTIVE'
+                              ? 'bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-200'
+                              : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200'
+                          }`}
+                        >
+                          {s.status === 'ACTIVE' ? 'Pause' : 'Activate'}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteService(s.id)}
+                          className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg cursor-pointer"
+                          title="Remove listing"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* TAB 3: BOOKINGS */}
       {activeTab === 'BOOKINGS' && (
         <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs text-xs">
-          <div className="p-4 border-b border-slate-100 bg-slate-50">
-            <h3 className="font-bold text-slate-900 text-sm">Platform Bookings Audit Log</h3>
+          <div className="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+            <h3 className="font-bold text-slate-900 text-sm">Platform Bookings Audit & Dispute Resolution</h3>
+            <span className="text-[11px] text-slate-500 font-mono">{bookings.length} Total Bookings</span>
           </div>
 
           <div className="overflow-x-auto">
@@ -513,7 +976,8 @@ export const AdminDashboard: React.FC = () => {
                   <th className="p-3.5">Client</th>
                   <th className="p-3.5">Specialist</th>
                   <th className="p-3.5">Slot</th>
-                  <th className="p-3.5 pr-5">Status</th>
+                  <th className="p-3.5">Status</th>
+                  <th className="p-3.5 pr-5 text-right">Dispute Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -535,14 +999,33 @@ export const AdminDashboard: React.FC = () => {
                     <td className="p-3.5 font-mono">
                       {b.booking_date} ({b.time_slot})
                     </td>
-                    <td className="p-3.5 pr-5">
+                    <td className="p-3.5">
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                         b.status === 'COMPLETED' ? 'bg-emerald-100 text-emerald-800' :
                         b.status === 'PENDING' ? 'bg-amber-100 text-amber-800' :
+                        b.status === 'CANCELLED' ? 'bg-slate-100 text-slate-700' :
                         'bg-blue-100 text-blue-800'
                       }`}>
                         {b.status}
                       </span>
+                    </td>
+                    <td className="p-3.5 pr-5 text-right">
+                      {b.status !== 'COMPLETED' && b.status !== 'CANCELLED' && (
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => handleAdminUpdateBooking(b.id, 'COMPLETED')}
+                            className="px-2 py-0.5 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200 rounded text-[10px] font-semibold cursor-pointer"
+                          >
+                            Resolve / Complete
+                          </button>
+                          <button
+                            onClick={() => handleAdminUpdateBooking(b.id, 'CANCELLED')}
+                            className="px-2 py-0.5 bg-red-50 text-red-800 hover:bg-red-100 border border-red-200 rounded text-[10px] font-semibold cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}

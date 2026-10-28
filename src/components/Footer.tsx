@@ -1,5 +1,4 @@
-import React from 'react';
-import { ShieldCheck, Heart } from 'lucide-react';
+import { ShieldCheck } from 'lucide-react';
 
 interface FooterProps {
   onNavigate: (tab: string, meta?: any) => void;
@@ -122,9 +121,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
 
         <div className="mt-12 pt-8 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-4">
           <p>© 2026 ServiceHub Technologies Inc. All rights reserved.</p>
-          <div className="flex items-center gap-1">
-            <span>Engineered for Academic Major Project</span>
-            <span aria-hidden="true">·</span>
+          <div className="flex items-center gap-3">
             <span>Zero-Mock Backend & Persistent SQL</span>
           </div>
         </div>

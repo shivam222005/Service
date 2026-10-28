@@ -6,6 +6,7 @@ import { AuthModal } from './components/AuthModal.js';
 import { NotificationsModal } from './components/NotificationsModal.js';
 import { BookingModal } from './components/BookingModal.js';
 import { EmergencyHelpModal } from './components/EmergencyHelpModal.js';
+import { AiAssistantModal } from './components/AiAssistantModal.js';
 import { HomePage } from './pages/HomePage.js';
 import { BrowseServicesPage } from './pages/BrowseServicesPage.js';
 import { ServiceDetailPage } from './pages/ServiceDetailPage.js';
@@ -32,6 +33,7 @@ function MainApp() {
   const [bookingService, setBookingService] = useState<ServiceListing | null>(null);
   const [bookingModalOpen, setBookingModalOpen] = useState(false);
   const [emergencyHelpOpen, setEmergencyHelpOpen] = useState(false);
+  const [aiAssistantOpen, setAiAssistantOpen] = useState(false);
 
   const navigateTo = (tab: string, meta: any = {}) => {
     setCurrentTab(tab);
@@ -62,6 +64,7 @@ function MainApp() {
         onOpenAuth={handleOpenAuth}
         onOpenNotifications={() => setNotificationsOpen(true)}
         onOpenEmergency={() => setEmergencyHelpOpen(true)}
+        onOpenAiAssistant={() => setAiAssistantOpen(true)}
       />
 
       {/* Main Content Area */}
@@ -72,6 +75,7 @@ function MainApp() {
             onOpenBooking={handleOpenBooking}
             onOpenAuth={handleOpenAuth}
             onOpenEmergency={() => setEmergencyHelpOpen(true)}
+            onOpenAiAssistant={() => setAiAssistantOpen(true)}
           />
         )}
 
@@ -167,6 +171,13 @@ function MainApp() {
         onClose={() => setEmergencyHelpOpen(false)}
         currentUser={user}
         onNavigate={navigateTo}
+      />
+
+      <AiAssistantModal
+        isOpen={aiAssistantOpen}
+        onClose={() => setAiAssistantOpen(false)}
+        onNavigate={navigateTo}
+        onOpenBooking={handleOpenBooking}
       />
     </div>
   );

@@ -16,9 +16,33 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const USER_CACHE_KEY = 'servicehub_cached_user';
+const PROFILE_CACHE_KEY = 'servicehub_cached_profile';
+
+function getCached<T>(key: string): T | null {
+  try {
+    const item = localStorage.getItem(key);
+    return item ? JSON.parse(item) : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function setCached(key: string, value: any): void {
+  try {
+    if (value) {
+      localStorage.setItem(key, JSON.stringify(value));
+    } else {
+      localStorage.removeItem(key);
+    }
+  } catch (_e) {
+    // Ignore iframe storage quotas
+  }
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
-  const [providerProfile, setProviderProfile] = useState<ProviderProfile | null>(null);
+  const [user, setUser] = useState<User | null>(() => getCached<User>(USER_CACHE_KEY));
+  const [providerProfile, setProviderProfile] = useState<ProviderProfile | null>(() => getCached<ProviderProfile>(PROFILE_CACHE_KEY));
   const [unreadCount, setUnreadCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
@@ -28,6 +52,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setUser(null);
         setProviderProfile(null);
         setUnreadCount(0);
+        setCached(USER_CACHE_KEY, null);
+        setCached(PROFILE_CACHE_KEY, null);
         setIsLoading(false);
         return;
       }
@@ -35,11 +61,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(data.user);
       setProviderProfile(data.providerProfile || null);
       setUnreadCount(data.unreadNotifications || 0);
+      setCached(USER_CACHE_KEY, data.user);
+      setCached(PROFILE_CACHE_KEY, data.providerProfile || null);
     } catch (err) {
       console.warn('Session expired or invalid token:', err);
       api.auth.logout();
       setUser(null);
       setProviderProfile(null);
+      setCached(USER_CACHE_KEY, null);
+      setCached(PROFILE_CACHE_KEY, null);
     } finally {
       setIsLoading(false);
     }
@@ -74,6 +104,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(null);
     setProviderProfile(null);
     setUnreadCount(0);
+    setCached(USER_CACHE_KEY, null);
+    setCached(PROFILE_CACHE_KEY, null);
   };
 
   const quickSwitchUser = async (type: 'customer' | 'provider' | 'admin') => {

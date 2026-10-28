@@ -14,17 +14,36 @@ import {
   User, 
   MapPin, 
   Trash2, 
-  Edit,
   ShieldCheck,
   Building,
   BadgeCheck,
   ShieldAlert,
-  Phone
+  Phone,
+  Truck,
+  QrCode,
+  FileText
 } from 'lucide-react';
+import { useRealtime } from '../hooks/useRealtime.js';
+import { ProviderPaymentModal } from '../components/ProviderPaymentModal.js';
+import { PaymentReceiptModal } from '../components/PaymentReceiptModal.js';
 
 export const ProviderDashboard: React.FC = () => {
   const { user, providerProfile, refreshUser } = useAuth();
   const [activeTab, setActiveTab] = useState<'BOOKINGS' | 'EMERGENCY' | 'SERVICES' | 'PROFILE'>('BOOKINGS');
+  const [selectedPaymentBooking, setSelectedPaymentBooking] = useState<Booking | null>(null);
+  const [showPaymentModal, setShowPaymentModal] = useState<boolean>(false);
+  const [selectedReceiptBooking, setSelectedReceiptBooking] = useState<Booking | null>(null);
+  const [showReceiptModal, setShowReceiptModal] = useState<boolean>(false);
+
+  // Real-time synchronization
+  useRealtime({
+    onBookingUpdate: () => {
+      loadBookings(false);
+    },
+    onEmergencyUpdate: () => {
+      loadEmergencyRequests(false);
+    },
+  });
 
   // Emergency Requests state
   const [emergencyRequests, setEmergencyRequests] = useState<EmergencyRequest[]>([]);
@@ -64,71 +83,81 @@ export const ProviderDashboard: React.FC = () => {
   const [state, setState] = useState(providerProfile?.state || '');
   const [pincode, setPincode] = useState(providerProfile?.pincode || '');
   const [profileSuccessMsg, setProfileSuccessMsg] = useState<string | null>(null);
+  const [globalNotice, setGlobalNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   useEffect(() => {
-    loadBookings();
-    loadServices();
+    loadBookings(true);
+    loadServices(true);
     loadCategories();
-    loadEmergencyRequests();
+    loadEmergencyRequests(true);
+
+    // Auto-sync polling every 8s for live booking and emergency updates
+    const interval = setInterval(() => {
+      loadBookings(false);
+      loadEmergencyRequests(false);
+    }, 8000);
+    return () => clearInterval(interval);
   }, []);
 
-  const loadEmergencyRequests = async () => {
-    setLoadingEmergency(true);
+  const loadEmergencyRequests = async (showLoading = true) => {
+    if (showLoading) setLoadingEmergency(true);
     try {
       const data = await api.emergency.getAll();
       setEmergencyRequests(data);
     } catch (err) {
       console.error('Failed to load emergency requests:', err);
     } finally {
-      setLoadingEmergency(false);
+      if (showLoading) setLoadingEmergency(false);
     }
   };
 
   const handleAcceptEmergency = async (id: number) => {
     try {
       const res = await api.emergency.accept(id);
-      setEmergencyActionMsg(res.message);
-      setTimeout(() => setEmergencyActionMsg(null), 4000);
-      await loadEmergencyRequests();
+      setGlobalNotice({ type: 'success', message: res.message });
+      setTimeout(() => setGlobalNotice(null), 4000);
+      await loadEmergencyRequests(false);
       refreshUser();
     } catch (err: any) {
-      alert(err.message || 'Failed to accept urgent repair request.');
+      setGlobalNotice({ type: 'error', message: err.message || 'Failed to accept urgent repair request.' });
+      setTimeout(() => setGlobalNotice(null), 5000);
     }
   };
 
   const handleUpdateEmergencyStatus = async (id: number, status: EmergencyStatus) => {
     try {
       const res = await api.emergency.updateStatus(id, status);
-      setEmergencyActionMsg(res.message);
-      setTimeout(() => setEmergencyActionMsg(null), 4000);
-      await loadEmergencyRequests();
+      setGlobalNotice({ type: 'success', message: res.message });
+      setTimeout(() => setGlobalNotice(null), 4000);
+      await loadEmergencyRequests(false);
     } catch (err: any) {
-      alert(err.message || 'Failed to update emergency status.');
+      setGlobalNotice({ type: 'error', message: err.message || 'Failed to update emergency status.' });
+      setTimeout(() => setGlobalNotice(null), 5000);
     }
   };
 
-  const loadBookings = async () => {
-    setLoadingBookings(true);
+  const loadBookings = async (showLoading = true) => {
+    if (showLoading) setLoadingBookings(true);
     try {
       const data = await api.bookings.getAll();
       setBookings(data);
     } catch (err) {
       console.error(err);
     } finally {
-      setLoadingBookings(false);
+      if (showLoading) setLoadingBookings(false);
     }
   };
 
-  const loadServices = async () => {
+  const loadServices = async (showLoading = true) => {
     if (!user) return;
-    setLoadingServices(true);
+    if (showLoading) setLoadingServices(true);
     try {
       const data = await api.services.getAll({ providerId: user.id });
       setServices(data);
     } catch (err) {
       console.error(err);
     } finally {
-      setLoadingServices(false);
+      if (showLoading) setLoadingServices(false);
     }
   };
 
@@ -145,10 +174,13 @@ export const ProviderDashboard: React.FC = () => {
   const handleUpdateBookingStatus = async (bookingId: number, status: BookingStatus) => {
     try {
       await api.bookings.updateStatus(bookingId, status);
-      await loadBookings();
+      setGlobalNotice({ type: 'success', message: `Booking #${bookingId} marked as ${status}.` });
+      setTimeout(() => setGlobalNotice(null), 4000);
+      await loadBookings(false);
       await refreshUser();
     } catch (err: any) {
-      alert(err.message || 'Failed to update booking status.');
+      setGlobalNotice({ type: 'error', message: err.message || 'Failed to update booking status.' });
+      setTimeout(() => setGlobalNotice(null), 5000);
     }
   };
 
@@ -172,19 +204,23 @@ export const ProviderDashboard: React.FC = () => {
       setNewServiceModal(false);
       setNewTitle('');
       setNewDescription('');
-      await loadServices();
+      setGlobalNotice({ type: 'success', message: 'New service listing created successfully.' });
+      setTimeout(() => setGlobalNotice(null), 4000);
+      await loadServices(false);
     } catch (err: any) {
       setCreateError(err.message || 'Failed to create service listing.');
     }
   };
 
   const handleDeleteService = async (id: number) => {
-    if (!window.confirm('Delete this service listing?')) return;
     try {
       await api.services.delete(id);
-      await loadServices();
+      setGlobalNotice({ type: 'success', message: `Service #${id} was removed.` });
+      setTimeout(() => setGlobalNotice(null), 4000);
+      await loadServices(false);
     } catch (err: any) {
-      alert(err.message || 'Failed to delete service.');
+      setGlobalNotice({ type: 'error', message: err.message || 'Failed to delete service.' });
+      setTimeout(() => setGlobalNotice(null), 5000);
     }
   };
 
@@ -192,9 +228,12 @@ export const ProviderDashboard: React.FC = () => {
     const nextStatus = service.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
     try {
       await api.services.update(service.id, { status: nextStatus });
-      await loadServices();
+      setGlobalNotice({ type: 'success', message: `Service "${service.title}" is now ${nextStatus}.` });
+      setTimeout(() => setGlobalNotice(null), 4000);
+      await loadServices(false);
     } catch (err: any) {
-      alert(err.message || 'Failed to update status.');
+      setGlobalNotice({ type: 'error', message: err.message || 'Failed to update service status.' });
+      setTimeout(() => setGlobalNotice(null), 5000);
     }
   };
 
@@ -215,25 +254,44 @@ export const ProviderDashboard: React.FC = () => {
       setProfileSuccessMsg('Profile settings saved successfully.');
       setTimeout(() => setProfileSuccessMsg(null), 3000);
     } catch (err: any) {
-      alert(err.message || 'Failed to update profile.');
+      setGlobalNotice({ type: 'error', message: err.message || 'Failed to update profile.' });
+      setTimeout(() => setGlobalNotice(null), 5000);
     }
   };
 
-  // KPIs
+  // KPIs & Financial Revenue Summaries
   const pendingRequests = bookings.filter((b) => b.status === 'PENDING').length;
-  const confirmedAppointments = bookings.filter((b) => ['ACCEPTED', 'CONFIRMED', 'IN_PROGRESS'].includes(b.status)).length;
+  const confirmedAppointments = bookings.filter((b) => ['ACCEPTED', 'CONFIRMED', 'ON_THE_WAY', 'IN_PROGRESS', 'AWAITING_PAYMENT'].includes(b.status)).length;
   const completedJobs = bookings.filter((b) => b.status === 'COMPLETED').length;
+  const totalEarnings = bookings
+    .filter((b) => b.status === 'COMPLETED')
+    .reduce((sum, b) => sum + (Number(b.total_price) || 0), 0);
+  const pendingEarnings = bookings
+    .filter((b) => ['ACCEPTED', 'CONFIRMED', 'ON_THE_WAY', 'IN_PROGRESS', 'AWAITING_PAYMENT'].includes(b.status))
+    .reduce((sum, b) => sum + (Number(b.total_price) || 0), 0);
 
   const filteredBookings = bookings.filter((b) => {
     if (bookingFilter === 'ALL') return true;
     if (bookingFilter === 'PENDING') return b.status === 'PENDING';
-    if (bookingFilter === 'CONFIRMED') return ['ACCEPTED', 'CONFIRMED', 'IN_PROGRESS'].includes(b.status);
+    if (bookingFilter === 'CONFIRMED') return ['ACCEPTED', 'CONFIRMED', 'ON_THE_WAY', 'IN_PROGRESS', 'AWAITING_PAYMENT'].includes(b.status);
     if (bookingFilter === 'COMPLETED') return b.status === 'COMPLETED';
     return true;
   });
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+      {/* Global Action Notification */}
+      {globalNotice && (
+        <div className={`p-4 rounded-2xl text-xs font-semibold flex items-center justify-between border shadow-xs transition-all ${
+          globalNotice.type === 'success' 
+            ? 'bg-emerald-50 text-emerald-900 border-emerald-200' 
+            : 'bg-rose-50 text-rose-900 border-rose-200'
+        }`}>
+          <span>{globalNotice.message}</span>
+          <button onClick={() => setGlobalNotice(null)} className="cursor-pointer font-bold px-2 py-0.5 hover:opacity-75">✕</button>
+        </div>
+      )}
+
       {/* Verification Status Banner */}
       {providerProfile && (
         <div className={`p-4 rounded-2xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs ${
@@ -269,8 +327,8 @@ export const ProviderDashboard: React.FC = () => {
         </div>
       )}
 
-      {/* KPI Stats Overview */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      {/* KPI Stats Overview & Accurate Earnings Summary */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
           <span className="text-xs text-slate-500 font-medium">Pending Requests</span>
           <p className="text-2xl sm:text-3xl font-extrabold text-amber-600 font-mono tabular-nums mt-1">
@@ -289,12 +347,20 @@ export const ProviderDashboard: React.FC = () => {
             {completedJobs}
           </p>
         </div>
+        <div className="bg-emerald-50/70 p-5 rounded-2xl border border-emerald-200 shadow-xs">
+          <span className="text-xs text-emerald-800 font-semibold">Realized Net Earnings</span>
+          <p className="text-2xl sm:text-3xl font-extrabold text-emerald-700 font-mono tabular-nums mt-1">
+            ₹{totalEarnings.toLocaleString('en-IN')}
+          </p>
+          <span className="text-[10px] text-emerald-600 block mt-0.5">from {completedJobs} completed jobs</span>
+        </div>
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
           <span className="text-xs text-slate-500 font-medium">Client Rating</span>
           <p className="text-2xl sm:text-3xl font-extrabold text-slate-900 font-mono tabular-nums mt-1 flex items-center gap-1">
             <Star className="w-5 h-5 text-amber-500 fill-amber-500" />
             <span>{providerProfile?.rating_avg || 5.0}</span>
           </p>
+          <span className="text-[10px] text-slate-400 block mt-0.5">Pipeline: ₹{pendingEarnings.toLocaleString('en-IN')}</span>
         </div>
       </div>
 
@@ -550,11 +616,12 @@ export const ProviderDashboard: React.FC = () => {
                       <span className="font-mono text-slate-400">#{booking.id}</span>
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                         booking.status === 'PENDING' ? 'bg-amber-100 text-amber-800' :
+                        booking.status === 'AWAITING_PAYMENT' ? 'bg-amber-100 text-amber-900 border border-amber-300 font-extrabold' :
                         booking.status === 'COMPLETED' ? 'bg-emerald-100 text-emerald-800' :
                         booking.status === 'CANCELLED' ? 'bg-slate-100 text-slate-700' :
                         'bg-blue-100 text-blue-800'
                       }`}>
-                        {booking.status}
+                        {booking.status === 'AWAITING_PAYMENT' ? 'Awaiting Payment' : booking.status}
                       </span>
                       <span className="text-slate-300">·</span>
                       <span className="text-slate-500">Requested {new Date(booking.created_at).toLocaleDateString()}</span>
@@ -613,37 +680,84 @@ export const ProviderDashboard: React.FC = () => {
                       )}
 
                       {booking.status === 'ACCEPTED' && (
-                        <button
-                          onClick={() => handleUpdateBookingStatus(booking.id, 'CONFIRMED')}
-                          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold cursor-pointer"
-                        >
-                          Confirm Schedule
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handleUpdateBookingStatus(booking.id, 'ON_THE_WAY')}
+                            className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold cursor-pointer shadow-xs"
+                          >
+                            On The Way
+                          </button>
+                          <button
+                            onClick={() => handleUpdateBookingStatus(booking.id, 'CONFIRMED')}
+                            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold cursor-pointer"
+                          >
+                            Confirm Slot
+                          </button>
+                        </div>
                       )}
 
                       {booking.status === 'CONFIRMED' && (
                         <button
-                          onClick={() => handleUpdateBookingStatus(booking.id, 'IN_PROGRESS')}
-                          className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-semibold cursor-pointer"
+                          onClick={() => handleUpdateBookingStatus(booking.id, 'ON_THE_WAY')}
+                          className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold cursor-pointer shadow-xs flex items-center gap-1.5"
                         >
-                          Start Service
+                          <Truck className="w-3.5 h-3.5" />
+                          <span>On The Way</span>
+                        </button>
+                      )}
+
+                      {booking.status === 'ON_THE_WAY' && (
+                        <button
+                          onClick={() => handleUpdateBookingStatus(booking.id, 'IN_PROGRESS')}
+                          className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold cursor-pointer shadow-xs"
+                        >
+                          Arrived & Start Service
                         </button>
                       )}
 
                       {booking.status === 'IN_PROGRESS' && (
                         <button
-                          onClick={() => handleUpdateBookingStatus(booking.id, 'COMPLETED')}
-                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-semibold cursor-pointer"
+                          onClick={() => {
+                            setSelectedPaymentBooking(booking);
+                            setShowPaymentModal(true);
+                          }}
+                          className="px-3.5 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl font-bold cursor-pointer shadow-sm flex items-center gap-1.5"
                         >
-                          Mark as Completed
+                          <QrCode className="w-3.5 h-3.5" />
+                          <span>Complete & Generate QR</span>
+                        </button>
+                      )}
+
+                      {booking.status === 'AWAITING_PAYMENT' && (
+                        <button
+                          onClick={() => {
+                            setSelectedPaymentBooking(booking);
+                            setShowPaymentModal(true);
+                          }}
+                          className="px-3.5 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl font-bold cursor-pointer shadow-sm flex items-center gap-1.5 animate-pulse"
+                        >
+                          <QrCode className="w-3.5 h-3.5" />
+                          <span>Show Payment QR</span>
                         </button>
                       )}
 
                       {booking.status === 'COMPLETED' && (
-                        <span className="text-emerald-700 font-semibold flex items-center gap-1">
-                          <CheckCircle className="w-4 h-4" />
-                          Job Completed
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-emerald-700 font-bold flex items-center gap-1">
+                            <CheckCircle className="w-4 h-4 text-emerald-600" />
+                            Completed · Paid
+                          </span>
+                          <button
+                            onClick={() => {
+                              setSelectedReceiptBooking(booking);
+                              setShowReceiptModal(true);
+                            }}
+                            className="p-1.5 text-slate-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors"
+                            title="View Tax Invoice"
+                          >
+                            <FileText className="w-4 h-4" />
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -984,6 +1098,33 @@ export const ProviderDashboard: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+
+      {showPaymentModal && selectedPaymentBooking && (
+        <ProviderPaymentModal
+          booking={selectedPaymentBooking}
+          isOpen={showPaymentModal}
+          onClose={() => {
+            setShowPaymentModal(false);
+            setSelectedPaymentBooking(null);
+            loadBookings(false);
+          }}
+          onPaymentSuccess={() => {
+            loadBookings(false);
+          }}
+        />
+      )}
+
+      {showReceiptModal && selectedReceiptBooking && (
+        <PaymentReceiptModal
+          booking={selectedReceiptBooking}
+          receipt={null}
+          isOpen={showReceiptModal}
+          onClose={() => {
+            setShowReceiptModal(false);
+            setSelectedReceiptBooking(null);
+          }}
+        />
       )}
     </div>
   );

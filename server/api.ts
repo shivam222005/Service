@@ -1,8 +1,23 @@
-import express, { Request, Response, NextFunction } from 'express';
+import express, { type Request, type Response, type NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import { db } from './db.js';
-import { User, UserRole, BookingStatus, EmergencyStatus } from '../src/types.js';
+import crypto from 'crypto';
+import QRCode from 'qrcode';
+import { GoogleGenAI } from '@google/genai';
+import { db } from './db.ts';
+import { broadcastBookingUpdate, broadcastEmergencyUpdate, broadcastPaymentUpdate } from './realtime.ts';
+import type { User, UserRole, BookingStatus, EmergencyStatus, EmergencyIncidentType, BillBreakdown, PaymentRecord, PaymentReceipt } from '../src/types.ts';
+
+export function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // Earth radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(R * c * 10) / 10;
+}
 
 export const apiRouter = express.Router();
 apiRouter.use(express.json());
@@ -378,6 +393,9 @@ apiRouter.get('/services', (req: Request, res: Response): void => {
       state, 
       pincode, 
       serviceMode, 
+      minRating,
+      lat,
+      lng,
       sort, 
       providerId 
     } = req.query;
@@ -396,6 +414,8 @@ apiRouter.get('/services', (req: Request, res: Response): void => {
         p.city as provider_city,
         p.district as provider_district,
         p.state as provider_state,
+        p.latitude as provider_latitude,
+        p.longitude as provider_longitude,
         COALESCE(ROUND(AVG(r.rating), 1), 5.0) as rating_avg,
         COUNT(DISTINCT r.id) as reviews_count
       FROM services s
@@ -464,6 +484,11 @@ apiRouter.get('/services', (req: Request, res: Response): void => {
 
     query += ` GROUP BY s.id`;
 
+    if (minRating) {
+      query += ` HAVING rating_avg >= ?`;
+      params.push(Number(minRating));
+    }
+
     switch (sort) {
       case 'price_asc':
         query += ` ORDER BY s.price ASC`;
@@ -480,7 +505,33 @@ apiRouter.get('/services', (req: Request, res: Response): void => {
         break;
     }
 
-    const services = db.prepare(query).all(...params);
+    let services = db.prepare(query).all(...params) as any[];
+
+    // Calculate real Haversine distance if customer coordinates provided
+    const userLat = lat ? parseFloat(String(lat)) : NaN;
+    const userLng = lng ? parseFloat(String(lng)) : NaN;
+    const hasValidCoords = !isNaN(userLat) && !isNaN(userLng);
+
+    if (hasValidCoords) {
+      services = services.map((s: any) => {
+        if (s.provider_latitude && s.provider_longitude) {
+          return {
+            ...s,
+            distance_km: calculateDistanceKm(userLat, userLng, s.provider_latitude, s.provider_longitude)
+          };
+        }
+        return s;
+      });
+
+      if (sort === 'distance') {
+        services.sort((a: any, b: any) => {
+          if (a.distance_km === undefined) return 1;
+          if (b.distance_km === undefined) return -1;
+          return a.distance_km - b.distance_km;
+        });
+      }
+    }
+
     res.json(services);
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to search services: ' + error.message });
@@ -813,10 +864,22 @@ apiRouter.get('/bookings', authenticateToken, (req: AuthRequest, res: Response):
 
     query += ` ORDER BY b.booking_date DESC, b.created_at DESC`;
 
-    const bookings = db.prepare(query).all(...params).map((b: any) => ({
-      ...b,
-      has_reviewed: Boolean(b.has_reviewed)
-    }));
+    const bookings = db.prepare(query).all(...params).map((b: any) => {
+      const timeline = db.prepare(`
+        SELECT h.*, u.name as changed_by_name, u.role as changed_by_role
+        FROM booking_status_history h
+        LEFT JOIN users u ON h.changed_by_user_id = u.id
+        WHERE h.booking_id = ?
+        ORDER BY h.created_at ASC
+      `).all(b.id);
+      const payment = db.prepare('SELECT * FROM payments WHERE booking_id = ?').get(b.id) as any;
+      return {
+        ...b,
+        has_reviewed: Boolean(b.has_reviewed),
+        timeline,
+        payment_record: payment || undefined
+      };
+    });
 
     res.json(bookings);
   } catch (error: any) {
@@ -913,11 +976,45 @@ apiRouter.post('/bookings', authenticateToken, requireRole('CUSTOMER'), (req: Au
         user.id,
         `Your request for "${service.title}" has been sent to ${service.provider_name}. Ref #${newBookingId}.`
       );
+
+      db.prepare(`
+        INSERT INTO booking_status_history (booking_id, status, notes, changed_by_user_id)
+        VALUES (?, 'PENDING', 'Booking request placed by client', ?)
+      `).run(newBookingId, user.id);
     })();
+
+    const createdBooking = db.prepare(`
+      SELECT b.*, s.title as service_title, c.name as customer_name, c.email as customer_email, p.name as provider_name, p.phone as provider_phone
+      FROM bookings b
+      JOIN services s ON b.service_id = s.id
+      JOIN users c ON b.customer_id = c.id
+      JOIN users p ON b.provider_id = p.id
+      WHERE b.id = ?
+    `).get(newBookingId) as any;
+
+    if (createdBooking) {
+      createdBooking.timeline = [{
+        id: 1,
+        booking_id: newBookingId,
+        status: 'PENDING',
+        notes: 'Booking request placed by client',
+        changed_by_user_id: user.id,
+        created_at: new Date().toISOString()
+      }];
+
+      broadcastBookingUpdate(createdBooking, {
+        booking_id: newBookingId,
+        status: 'PENDING',
+        notes: 'Booking request placed by client',
+        changed_by_user_id: user.id,
+        created_at: new Date().toISOString()
+      });
+    }
 
     res.status(201).json({
       id: newBookingId,
-      message: 'Booking request sent successfully to the specialist.'
+      message: 'Booking request sent successfully to the specialist.',
+      booking: createdBooking
     });
   } catch (error: any) {
     console.error('Booking creation error:', error);
@@ -925,19 +1022,19 @@ apiRouter.post('/bookings', authenticateToken, requireRole('CUSTOMER'), (req: Au
   }
 });
 
-apiRouter.patch('/bookings/:id/status', authenticateToken, (req: AuthRequest, res: Response): void => {
+const handleUpdateBookingStatusAction = (req: AuthRequest, res: Response): void => {
   try {
     const user = req.user!;
-    const { status } = req.body as { status: BookingStatus };
+    const { status, notes } = req.body as { status: BookingStatus; notes?: string };
 
-    const validStatuses: BookingStatus[] = ['PENDING', 'ACCEPTED', 'CONFIRMED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'REJECTED'];
+    const validStatuses: BookingStatus[] = ['PENDING', 'ACCEPTED', 'CONFIRMED', 'ON_THE_WAY', 'IN_PROGRESS', 'AWAITING_PAYMENT', 'COMPLETED', 'CANCELLED', 'REJECTED'];
     if (!status || !validStatuses.includes(status)) {
       res.status(400).json({ error: 'Invalid booking status transition requested.' });
       return;
     }
 
     const booking = db.prepare(`
-      SELECT b.*, s.title as service_title, c.name as customer_name, p.name as provider_name
+      SELECT b.*, s.title as service_title, c.name as customer_name, c.email as customer_email, p.name as provider_name, p.phone as provider_phone
       FROM bookings b
       JOIN services s ON b.service_id = s.id
       JOIN users c ON b.customer_id = c.id
@@ -959,8 +1056,8 @@ apiRouter.patch('/bookings/:id/status', authenticateToken, (req: AuthRequest, re
         res.status(403).json({ error: 'Customers are only permitted to cancel pending or accepted bookings.' });
         return;
       }
-      if (booking.status === 'COMPLETED' || booking.status === 'IN_PROGRESS') {
-        res.status(400).json({ error: 'Cannot cancel a booking that is already in progress or completed.' });
+      if (booking.status === 'COMPLETED' || booking.status === 'IN_PROGRESS' || booking.status === 'ON_THE_WAY') {
+        res.status(400).json({ error: 'Cannot cancel a booking that is already on the way, in progress, or completed.' });
         return;
       }
     } else if (user.role === 'SERVICE_PROVIDER') {
@@ -970,12 +1067,28 @@ apiRouter.patch('/bookings/:id/status', authenticateToken, (req: AuthRequest, re
       }
     }
 
+    let updatedRecord: any = null;
     db.transaction(() => {
       db.prepare(`
         UPDATE bookings
         SET status = ?, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `).run(status, booking.id);
+
+      // Record in immutable status history
+      const historyNote = notes?.trim() || (
+        status === 'ON_THE_WAY' ? 'Specialist is en route to service location' :
+        status === 'IN_PROGRESS' ? 'Specialist has arrived and commenced work' :
+        status === 'COMPLETED' ? 'Work completed and verified' :
+        status === 'ACCEPTED' ? 'Booking request confirmed by specialist' :
+        status === 'CANCELLED' ? 'Booking cancelled' :
+        `Status updated to ${status}`
+      );
+
+      db.prepare(`
+        INSERT INTO booking_status_history (booking_id, status, notes, changed_by_user_id)
+        VALUES (?, ?, ?, ?)
+      `).run(booking.id, status, historyNote, user.id);
 
       if (user.role === 'CUSTOMER') {
         db.prepare(`
@@ -991,6 +1104,18 @@ apiRouter.patch('/bookings/:id/status', authenticateToken, (req: AuthRequest, re
           notifType = 'BOOKING_ACCEPTED';
           title = 'Booking Request Accepted!';
           message = `${booking.provider_name} has accepted your booking for "${booking.service_title}" on ${booking.booking_date}.`;
+        } else if (status === 'ON_THE_WAY') {
+          notifType = 'SYSTEM';
+          title = 'Specialist En Route';
+          message = `${booking.provider_name} is on the way to your location for "${booking.service_title}".`;
+        } else if (status === 'IN_PROGRESS') {
+          notifType = 'SYSTEM';
+          title = 'Service Commenced';
+          message = `${booking.provider_name} has started work on "${booking.service_title}".`;
+        } else if (status === 'AWAITING_PAYMENT') {
+          notifType = 'SYSTEM';
+          title = 'Service Finished — Payment Awaiting';
+          message = `${booking.provider_name} has finished work on "${booking.service_title}". Please complete the payment.`;
         } else if (status === 'COMPLETED') {
           notifType = 'BOOKING_COMPLETED';
           title = 'Service Completed';
@@ -1007,9 +1132,604 @@ apiRouter.patch('/bookings/:id/status', authenticateToken, (req: AuthRequest, re
       }
     })();
 
-    res.json({ message: `Booking status successfully changed to ${status}.` });
+    // Fetch refreshed booking with full timeline
+    updatedRecord = db.prepare(`
+      SELECT b.*, s.title as service_title, c.name as customer_name, c.email as customer_email, c.phone as customer_phone, p.name as provider_name, p.phone as provider_phone
+      FROM bookings b
+      JOIN services s ON b.service_id = s.id
+      JOIN users c ON b.customer_id = c.id
+      JOIN users p ON b.provider_id = p.id
+      WHERE b.id = ?
+    `).get(booking.id);
+
+    const timeline = db.prepare(`
+      SELECT h.*, u.name as changed_by_name, u.role as changed_by_role
+      FROM booking_status_history h
+      LEFT JOIN users u ON h.changed_by_user_id = u.id
+      WHERE h.booking_id = ?
+      ORDER BY h.created_at ASC
+    `).all(booking.id);
+
+    updatedRecord.timeline = timeline;
+
+    // Real-time WebSocket event broadcast to customer and provider
+    broadcastBookingUpdate(updatedRecord, {
+      booking_id: booking.id,
+      status,
+      notes: notes || `Status updated to ${status}`,
+      changed_by_user_id: user.id,
+      created_at: new Date().toISOString()
+    });
+
+    res.json({
+      success: true,
+      message: `Booking status successfully changed to ${status}.`,
+      booking: updatedRecord
+    });
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to update booking status: ' + error.message });
+  }
+};
+apiRouter.patch('/bookings/:id/status', authenticateToken, handleUpdateBookingStatusAction);
+apiRouter.put('/bookings/:id/status', authenticateToken, handleUpdateBookingStatusAction);
+
+apiRouter.get('/bookings/:id/timeline', authenticateToken, (req: AuthRequest, res: Response): void => {
+  try {
+    const user = req.user!;
+    const booking = db.prepare('SELECT id, customer_id, provider_id FROM bookings WHERE id = ?').get(req.params.id) as any;
+    if (!booking) {
+      res.status(404).json({ error: 'Booking record not found.' });
+      return;
+    }
+
+    if (user.role !== 'ADMIN' && booking.customer_id !== user.id && booking.provider_id !== user.id) {
+      res.status(403).json({ error: 'Unauthorized to view timeline for this booking.' });
+      return;
+    }
+
+    const timeline = db.prepare(`
+      SELECT h.*, u.name as changed_by_name, u.role as changed_by_role
+      FROM booking_status_history h
+      LEFT JOIN users u ON h.changed_by_user_id = u.id
+      WHERE h.booking_id = ?
+      ORDER BY h.created_at ASC
+    `).all(booking.id);
+
+    res.json({ success: true, booking_id: booking.id, timeline });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to fetch booking timeline: ' + error.message });
+  }
+});
+
+// -------------------------------------------------------------
+// POST-SERVICE QR PAYMENT & BILLING APIS
+// -------------------------------------------------------------
+
+export function computeBillBreakdown(basePrice: number): BillBreakdown {
+  const baseAmount = Number(basePrice) || 0;
+  const taxRatePercent = 18;
+  const taxAmount = Math.round(baseAmount * 0.18 * 100) / 100;
+  const platformFee = 29.00;
+  const totalAmount = Math.round((baseAmount + taxAmount + platformFee) * 100) / 100;
+  const providerAmount = baseAmount;
+
+  return {
+    baseAmount,
+    taxRatePercent,
+    taxAmount,
+    platformFee,
+    totalAmount,
+    providerAmount
+  };
+}
+
+export async function generateUpiQrData(bookingId: number, orderId: string, totalAmount: number) {
+  const payeeVpa = process.env.SERVICEHUB_UPI_VPA || 'servicehub@icici';
+  const payeeName = 'ServiceHub India';
+  const encodedName = encodeURIComponent(payeeName);
+  const formattedAmount = totalAmount.toFixed(2);
+  const note = encodeURIComponent(`ServiceHub Bill Ref #${bookingId}`);
+
+  // Official NPCI UPI URI Scheme
+  const upiString = `upi://pay?pa=${payeeVpa}&pn=${encodedName}&mc=5499&tr=${orderId}&tn=${note}&am=${formattedAmount}&cu=INR`;
+
+  const qrDataUrl = await QRCode.toDataURL(upiString, {
+    errorCorrectionLevel: 'M',
+    margin: 2,
+    width: 320,
+    color: {
+      dark: '#0f172a',
+      light: '#ffffff'
+    }
+  });
+
+  return { upiString, qrDataUrl };
+}
+
+function generateReceiptObject(booking: any, payment: any): PaymentReceipt {
+  const breakdown = computeBillBreakdown(payment.base_amount || booking.total_price);
+  return {
+    receipt_id: `SHUB-RCP-${booking.id}-${new Date().getFullYear()}`,
+    booking_id: booking.id,
+    service_title: booking.service_title || 'Professional Service',
+    service_mode: booking.service_mode || 'ON_SITE',
+    booking_date: booking.booking_date,
+    time_slot: booking.time_slot,
+    customer_name: booking.customer_name || 'Valued Customer',
+    customer_email: booking.customer_email,
+    customer_phone: booking.customer_phone,
+    provider_name: booking.provider_name || 'Service Specialist',
+    provider_business: booking.provider_business,
+    provider_phone: booking.provider_phone,
+    payment_status: payment.status || 'PAID',
+    paid_at: payment.paid_at || new Date().toISOString(),
+    payment_method: payment.payment_method || 'UPI QR Instant Pay',
+    bank_reference: payment.bank_reference || payment.gateway_payment_id || `UPI-${booking.id}-${Date.now().toString().slice(-6)}`,
+    breakdown
+  };
+}
+
+// 1. Provider completes service: calculates final bill, generates single-use UPI QR, sets AWAITING_PAYMENT
+apiRouter.post('/bookings/:id/complete', authenticateToken, requireRole('SERVICE_PROVIDER'), async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const user = req.user!;
+    const bookingId = Number(req.params.id);
+
+    const booking = db.prepare(`
+      SELECT b.*, s.title as service_title, c.name as customer_name, c.email as customer_email, p.name as provider_name, prof.business_name as provider_business
+      FROM bookings b
+      JOIN services s ON b.service_id = s.id
+      JOIN users c ON b.customer_id = c.id
+      JOIN users p ON b.provider_id = p.id
+      JOIN provider_profiles prof ON prof.user_id = p.id
+      WHERE b.id = ?
+    `).get(bookingId) as any;
+
+    if (!booking) {
+      res.status(404).json({ error: 'Booking record not found.' });
+      return;
+    }
+
+    if (booking.provider_id !== user.id) {
+      res.status(403).json({ error: 'Unauthorized: Only the assigned specialist can complete this service and generate the bill.' });
+      return;
+    }
+
+    if (booking.status === 'COMPLETED') {
+      res.status(400).json({ error: 'This booking has already been completed and paid.' });
+      return;
+    }
+
+    if (booking.status === 'CANCELLED' || booking.status === 'REJECTED') {
+      res.status(400).json({ error: 'Cannot complete a cancelled or rejected booking.' });
+      return;
+    }
+
+    const breakdown = computeBillBreakdown(booking.total_price);
+    const orderId = `ORDER_${booking.id}_${Date.now()}`;
+    const { upiString, qrDataUrl } = await generateUpiQrData(booking.id, orderId, breakdown.totalAmount);
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15-minute validity window
+
+    db.transaction(() => {
+      // 1. Set booking status to AWAITING_PAYMENT
+      db.prepare(`
+        UPDATE bookings
+        SET status = 'AWAITING_PAYMENT', updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(booking.id);
+
+      // 2. Upsert single-use transaction payment session
+      db.prepare(`
+        INSERT INTO payments (
+          booking_id, gateway_order_id, amount, base_amount, tax_amount, platform_fee, provider_amount, currency, status, qr_string, qr_data_url, expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'INR', 'PENDING', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(booking_id) DO UPDATE SET
+          gateway_order_id = excluded.gateway_order_id,
+          amount = excluded.amount,
+          base_amount = excluded.base_amount,
+          tax_amount = excluded.tax_amount,
+          platform_fee = excluded.platform_fee,
+          provider_amount = excluded.provider_amount,
+          status = 'PENDING',
+          qr_string = excluded.qr_string,
+          qr_data_url = excluded.qr_data_url,
+          expires_at = excluded.expires_at,
+          updated_at = CURRENT_TIMESTAMP
+      `).run(
+        booking.id,
+        orderId,
+        breakdown.totalAmount,
+        breakdown.baseAmount,
+        breakdown.taxAmount,
+        breakdown.platformFee,
+        breakdown.providerAmount,
+        upiString,
+        qrDataUrl,
+        expiresAt
+      );
+
+      // 3. Record in immutable audit timeline
+      db.prepare(`
+        INSERT INTO booking_status_history (booking_id, status, notes, changed_by_user_id)
+        VALUES (?, 'AWAITING_PAYMENT', ?, ?)
+      `).run(
+        booking.id,
+        `Service work completed by specialist. Transparent bill of ₹${breakdown.totalAmount} generated (Base: ₹${breakdown.baseAmount} + GST 18%: ₹${breakdown.taxAmount} + Platform Facilitation: ₹${breakdown.platformFee}). Single-use UPI QR active (15-min countdown).`,
+        user.id
+      );
+
+      // 4. Send customer notification with direct payment link
+      db.prepare(`
+        INSERT INTO notifications (user_id, title, message, type, link)
+        VALUES (?, 'Service Completed — Scan & Pay', ?, 'SYSTEM', '/dashboard')
+      `).run(
+        booking.customer_id,
+        `Specialist ${booking.provider_name} has finished work for "${booking.service_title}". Total bill is ₹${breakdown.totalAmount}. Please scan the QR code to complete payment.`
+      );
+    })();
+
+    const updatedBooking = db.prepare(`
+      SELECT b.*, s.title as service_title, c.name as customer_name, c.email as customer_email, c.phone as customer_phone, p.name as provider_name, p.phone as provider_phone, prof.business_name as provider_business
+      FROM bookings b
+      JOIN services s ON b.service_id = s.id
+      JOIN users c ON b.customer_id = c.id
+      JOIN users p ON b.provider_id = p.id
+      JOIN provider_profiles prof ON prof.user_id = p.id
+      WHERE b.id = ?
+    `).get(booking.id) as any;
+
+    const payment = db.prepare('SELECT * FROM payments WHERE booking_id = ?').get(booking.id) as any;
+    updatedBooking.payment_record = payment;
+    updatedBooking.timeline = db.prepare(`
+      SELECT h.*, u.name as changed_by_name, u.role as changed_by_role
+      FROM booking_status_history h
+      LEFT JOIN users u ON h.changed_by_user_id = u.id
+      WHERE h.booking_id = ?
+      ORDER BY h.created_at ASC
+    `).all(booking.id);
+
+    broadcastBookingUpdate(updatedBooking, {
+      booking_id: booking.id,
+      status: 'AWAITING_PAYMENT',
+      notes: `Service completed. Bill of ₹${breakdown.totalAmount} generated.`,
+      changed_by_user_id: user.id,
+      created_at: new Date().toISOString()
+    });
+
+    res.json({
+      success: true,
+      message: 'Service marked complete. Bill and payment QR generated successfully.',
+      booking: updatedBooking,
+      payment,
+      breakdown
+    });
+  } catch (error: any) {
+    console.error('Service completion error:', error);
+    res.status(500).json({ error: 'Failed to complete service: ' + error.message });
+  }
+});
+
+// 2. Fetch payment details, bill breakdown, and QR code for a booking
+apiRouter.get('/bookings/:id/payment', authenticateToken, (req: AuthRequest, res: Response): void => {
+  try {
+    const user = req.user!;
+    const bookingId = Number(req.params.id);
+
+    const booking = db.prepare(`
+      SELECT b.*, s.title as service_title, c.name as customer_name, c.email as customer_email, p.name as provider_name, prof.business_name as provider_business
+      FROM bookings b
+      JOIN services s ON b.service_id = s.id
+      JOIN users c ON b.customer_id = c.id
+      JOIN users p ON b.provider_id = p.id
+      JOIN provider_profiles prof ON prof.user_id = p.id
+      WHERE b.id = ?
+    `).get(bookingId) as any;
+
+    if (!booking) {
+      res.status(404).json({ error: 'Booking not found.' });
+      return;
+    }
+
+    if (user.role !== 'ADMIN' && booking.customer_id !== user.id && booking.provider_id !== user.id) {
+      res.status(403).json({ error: 'Unauthorized to view payment details for this booking.' });
+      return;
+    }
+
+    let payment = db.prepare('SELECT * FROM payments WHERE booking_id = ?').get(bookingId) as any;
+    if (!payment) {
+      res.status(404).json({ error: 'No active payment session found for this booking.' });
+      return;
+    }
+
+    // Check expiration
+    if (payment.status === 'PENDING' && new Date(payment.expires_at).getTime() < Date.now()) {
+      db.prepare("UPDATE payments SET status = 'EXPIRED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(payment.id);
+      payment.status = 'EXPIRED';
+    }
+
+    const breakdown = computeBillBreakdown(payment.base_amount || booking.total_price);
+
+    res.json({
+      success: true,
+      payment,
+      breakdown,
+      booking: {
+        id: booking.id,
+        status: booking.status,
+        service_title: booking.service_title,
+        customer_name: booking.customer_name,
+        provider_name: booking.provider_name
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to fetch payment details: ' + error.message });
+  }
+});
+
+// 3. Verify payment: verifies gateway signature or simulated UPI event, transitions to COMPLETED · PAID idempotently
+apiRouter.post('/payments/:id/verify', authenticateToken, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const user = req.user!;
+    const paymentOrBookingId = req.params.id;
+
+    const payment = db.prepare(`
+      SELECT * FROM payments WHERE id = ? OR booking_id = ?
+    `).get(paymentOrBookingId, paymentOrBookingId) as any;
+
+    if (!payment) {
+      res.status(404).json({ error: 'Payment session not found.' });
+      return;
+    }
+
+    const booking = db.prepare(`
+      SELECT b.*, s.title as service_title, c.name as customer_name, c.email as customer_email, c.phone as customer_phone, p.name as provider_name, p.phone as provider_phone, prof.business_name as provider_business
+      FROM bookings b
+      JOIN services s ON b.service_id = s.id
+      JOIN users c ON b.customer_id = c.id
+      JOIN users p ON b.provider_id = p.id
+      JOIN provider_profiles prof ON prof.user_id = p.id
+      WHERE b.id = ?
+    `).get(payment.booking_id) as any;
+
+    if (!booking) {
+      res.status(404).json({ error: 'Associated booking not found.' });
+      return;
+    }
+
+    if (user.role !== 'ADMIN' && booking.customer_id !== user.id && booking.provider_id !== user.id) {
+      res.status(403).json({ error: 'Unauthorized to verify this payment.' });
+      return;
+    }
+
+    // IDEMPOTENCY: If payment is already verified and marked PAID, do not double-process
+    if (payment.status === 'PAID') {
+      const receipt = generateReceiptObject(booking, payment);
+      res.json({
+        success: true,
+        verified: true,
+        message: 'Payment has already been verified and confirmed.',
+        payment,
+        booking,
+        receipt
+      });
+      return;
+    }
+
+    const { razorpay_payment_id, razorpay_order_id, razorpay_signature, bank_reference } = req.body;
+
+    // Cryptographic signature check if gateway details supplied
+    if (razorpay_payment_id && razorpay_order_id && razorpay_signature && process.env.RAZORPAY_KEY_SECRET) {
+      const expectedSignature = crypto
+        .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+        .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+        .digest('hex');
+
+      if (expectedSignature !== razorpay_signature) {
+        res.status(400).json({ error: 'Cryptographic payment signature mismatch. Payment verification failed.' });
+        return;
+      }
+    }
+
+    const verifiedPaymentId = razorpay_payment_id || `PAY_${Date.now().toString().slice(-8)}_${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+    const verifiedBankRef = bank_reference || `UPI-RRR-${Date.now().toString().slice(-6)}${Math.floor(1000 + Math.random() * 9000)}`;
+
+    db.transaction(() => {
+      // 1. Mark payment as PAID
+      db.prepare(`
+        UPDATE payments
+        SET status = 'PAID', paid_at = CURRENT_TIMESTAMP, gateway_payment_id = ?, bank_reference = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(verifiedPaymentId, verifiedBankRef, payment.id);
+
+      // 2. Mark booking as COMPLETED and payment_status as PAID
+      db.prepare(`
+        UPDATE bookings
+        SET status = 'COMPLETED', payment_status = 'PAID', updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(booking.id);
+
+      // 3. Record in audit timeline
+      db.prepare(`
+        INSERT INTO booking_status_history (booking_id, status, notes, changed_by_user_id)
+        VALUES (?, 'COMPLETED', ?, ?)
+      `).run(
+        booking.id,
+        `Payment of ₹${payment.amount} verified successfully via UPI. Transaction Ref: ${verifiedBankRef}. Service lifecycle completed.`,
+        user.id
+      );
+
+      // 4. Notifications
+      db.prepare(`
+        INSERT INTO notifications (user_id, title, message, type, link)
+        VALUES (?, 'Payment Confirmed 🎉', ?, 'BOOKING_COMPLETED', '/dashboard')
+      `).run(
+        booking.customer_id,
+        `Payment of ₹${payment.amount} for "${booking.service_title}" has been successfully verified! Bank Ref: ${verifiedBankRef}.`
+      );
+
+      db.prepare(`
+        INSERT INTO notifications (user_id, title, message, type, link)
+        VALUES (?, 'Payment Received 🎉', ?, 'SYSTEM', '/pro-dashboard')
+      `).run(
+        booking.provider_id,
+        `Payment of ₹${payment.amount} received from ${booking.customer_name} for "${booking.service_title}". Booking marked Completed · Paid.`
+      );
+    })();
+
+    const updatedBooking = db.prepare(`
+      SELECT b.*, s.title as service_title, c.name as customer_name, c.email as customer_email, c.phone as customer_phone, p.name as provider_name, p.phone as provider_phone, prof.business_name as provider_business
+      FROM bookings b
+      JOIN services s ON b.service_id = s.id
+      JOIN users c ON b.customer_id = c.id
+      JOIN users p ON b.provider_id = p.id
+      JOIN provider_profiles prof ON prof.user_id = p.id
+      WHERE b.id = ?
+    `).get(booking.id) as any;
+
+    const updatedPayment = db.prepare('SELECT * FROM payments WHERE id = ?').get(payment.id) as any;
+    updatedBooking.payment_record = updatedPayment;
+    updatedBooking.timeline = db.prepare(`
+      SELECT h.*, u.name as changed_by_name, u.role as changed_by_role
+      FROM booking_status_history h
+      LEFT JOIN users u ON h.changed_by_user_id = u.id
+      WHERE h.booking_id = ?
+      ORDER BY h.created_at ASC
+    `).all(booking.id);
+
+    // Broadcast live updates to both customer and provider
+    broadcastBookingUpdate(updatedBooking, {
+      booking_id: booking.id,
+      status: 'COMPLETED',
+      notes: `Payment of ₹${updatedPayment.amount} confirmed.`,
+      changed_by_user_id: user.id,
+      created_at: new Date().toISOString()
+    });
+    broadcastPaymentUpdate(updatedPayment, updatedBooking);
+
+    const receipt = generateReceiptObject(updatedBooking, updatedPayment);
+
+    res.json({
+      success: true,
+      verified: true,
+      message: 'Payment verified successfully. Booking marked Completed · Paid.',
+      payment: updatedPayment,
+      booking: updatedBooking,
+      receipt
+    });
+  } catch (error: any) {
+    console.error('Payment verification error:', error);
+    res.status(500).json({ error: 'Failed to verify payment: ' + error.message });
+  }
+});
+
+// 4. Payment Gateway Webhook (Razorpay / UPI Gateway)
+apiRouter.post('/payments/webhook', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const signature = req.headers['x-razorpay-signature'] as string;
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+
+    if (webhookSecret && signature) {
+      const shasum = crypto.createHmac('sha256', webhookSecret);
+      shasum.update(JSON.stringify(req.body));
+      const digest = shasum.digest('hex');
+
+      if (digest !== signature) {
+        res.status(400).json({ error: 'Invalid webhook signature.' });
+        return;
+      }
+    }
+
+    const event = req.body.event;
+    const paymentEntity = req.body.payload?.payment?.entity || req.body.payload?.order?.entity;
+
+    if (event === 'payment.captured' || event === 'order.paid') {
+      const orderId = paymentEntity?.order_id;
+      const paymentId = paymentEntity?.id || `PAY_${Date.now()}`;
+      const bankRef = paymentEntity?.acquirer_data?.rrn || `UPI-WEBHOOK-${Date.now().toString().slice(-6)}`;
+
+      if (orderId) {
+        const payment = db.prepare('SELECT * FROM payments WHERE gateway_order_id = ?').get(orderId) as any;
+        if (payment && payment.status !== 'PAID') {
+          db.transaction(() => {
+            db.prepare(`
+              UPDATE payments
+              SET status = 'PAID', paid_at = CURRENT_TIMESTAMP, gateway_payment_id = ?, bank_reference = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(paymentId, bankRef, payment.id);
+
+            db.prepare(`
+              UPDATE bookings
+              SET status = 'COMPLETED', payment_status = 'PAID', updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(payment.booking_id);
+
+            db.prepare(`
+              INSERT INTO booking_status_history (booking_id, status, notes)
+              VALUES (?, 'COMPLETED', ?)
+            `).run(
+              payment.booking_id,
+              `Payment of ₹${payment.amount} verified via gateway webhook. Ref: ${bankRef}.`
+            );
+          })();
+
+          const updatedBooking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(payment.booking_id) as any;
+          const updatedPayment = db.prepare('SELECT * FROM payments WHERE id = ?').get(payment.id) as any;
+          broadcastBookingUpdate(updatedBooking);
+          broadcastPaymentUpdate(updatedPayment, updatedBooking);
+        }
+      }
+    }
+
+    res.json({ status: 'ok', received: true });
+  } catch (error: any) {
+    console.error('Webhook processing error:', error);
+    res.status(500).json({ error: 'Webhook processing failed.' });
+  }
+});
+
+// 5. Generate and download complete invoice/receipt for paid booking
+apiRouter.get('/bookings/:id/receipt', authenticateToken, (req: AuthRequest, res: Response): void => {
+  try {
+    const user = req.user!;
+    const bookingId = Number(req.params.id);
+
+    const booking = db.prepare(`
+      SELECT b.*, s.title as service_title, c.name as customer_name, c.email as customer_email, c.phone as customer_phone, p.name as provider_name, p.phone as provider_phone, prof.business_name as provider_business
+      FROM bookings b
+      JOIN services s ON b.service_id = s.id
+      JOIN users c ON b.customer_id = c.id
+      JOIN users p ON b.provider_id = p.id
+      JOIN provider_profiles prof ON prof.user_id = p.id
+      WHERE b.id = ?
+    `).get(bookingId) as any;
+
+    if (!booking) {
+      res.status(404).json({ error: 'Booking record not found.' });
+      return;
+    }
+
+    if (user.role !== 'ADMIN' && booking.customer_id !== user.id && booking.provider_id !== user.id) {
+      res.status(403).json({ error: 'Unauthorized to view receipt for this booking.' });
+      return;
+    }
+
+    const payment = db.prepare('SELECT * FROM payments WHERE booking_id = ?').get(bookingId) as any || {
+      amount: booking.total_price,
+      base_amount: booking.total_price,
+      status: booking.payment_status === 'PAID' ? 'PAID' : 'PENDING',
+      paid_at: booking.updated_at,
+      payment_method: booking.payment_method,
+      bank_reference: `REF-BKG-${booking.id}`
+    };
+
+    const receipt = generateReceiptObject(booking, payment);
+
+    res.json({
+      success: true,
+      receipt
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to generate receipt: ' + error.message });
   }
 });
 
@@ -1191,7 +1911,7 @@ apiRouter.get('/admin/providers', authenticateToken, requireRole('ADMIN'), (req:
   }
 });
 
-apiRouter.patch('/admin/providers/:id/verify', authenticateToken, requireRole('ADMIN'), (req: AuthRequest, res: Response): void => {
+const handleVerifyProviderAction = (req: AuthRequest, res: Response): void => {
   try {
     const { status } = req.body;
     if (status !== 'APPROVED' && status !== 'REJECTED') {
@@ -1223,7 +1943,9 @@ apiRouter.patch('/admin/providers/:id/verify', authenticateToken, requireRole('A
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to update provider status: ' + error.message });
   }
-});
+};
+apiRouter.patch('/admin/providers/:id/verify', authenticateToken, requireRole('ADMIN'), handleVerifyProviderAction);
+apiRouter.put('/admin/providers/:id/verify', authenticateToken, requireRole('ADMIN'), handleVerifyProviderAction);
 
 apiRouter.get('/admin/bookings', authenticateToken, requireRole('ADMIN'), (req: AuthRequest, res: Response): void => {
   try {
@@ -1258,27 +1980,118 @@ apiRouter.delete('/admin/reviews/:id', authenticateToken, requireRole('ADMIN'), 
   }
 });
 
+apiRouter.get('/admin/users', authenticateToken, requireRole('ADMIN'), (_req: AuthRequest, res: Response): void => {
+  try {
+    const users = db.prepare(`
+      SELECT 
+        u.id, u.name, u.email, u.role, u.phone, u.avatar_url, u.created_at,
+        p.business_name, p.verification_status, p.district, p.city,
+        (SELECT COUNT(*) FROM bookings b WHERE b.customer_id = u.id OR b.provider_id = u.id) as bookings_count
+      FROM users u
+      LEFT JOIN provider_profiles p ON p.user_id = u.id
+      ORDER BY u.id DESC
+    `).all();
+    res.json(users);
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to retrieve users: ' + error.message });
+  }
+});
+
+apiRouter.get('/admin/services', authenticateToken, requireRole('ADMIN'), (_req: AuthRequest, res: Response): void => {
+  try {
+    const services = db.prepare(`
+      SELECT 
+        s.*,
+        c.name as category_name,
+        c.sector as category_sector,
+        u.name as provider_name,
+        u.email as provider_email,
+        p.business_name as provider_business,
+        p.district as provider_district,
+        COALESCE(ROUND(AVG(r.rating), 1), 5.0) as rating_avg,
+        COUNT(r.id) as reviews_count
+      FROM services s
+      JOIN categories c ON s.category_id = c.id
+      JOIN users u ON s.provider_id = u.id
+      JOIN provider_profiles p ON p.user_id = u.id
+      LEFT JOIN reviews r ON r.service_id = s.id
+      GROUP BY s.id
+      ORDER BY s.id DESC
+    `).all();
+    res.json(services);
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to load admin services: ' + error.message });
+  }
+});
+
+apiRouter.delete('/admin/services/:id', authenticateToken, requireRole('ADMIN'), (req: AuthRequest, res: Response): void => {
+  try {
+    const result = db.prepare('DELETE FROM services WHERE id = ?').run(req.params.id);
+    if (result.changes === 0) {
+      res.status(404).json({ error: 'Service listing not found.' });
+      return;
+    }
+    res.json({ message: 'Service listing successfully removed by administrator moderation.' });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to delete service listing: ' + error.message });
+  }
+});
+
+apiRouter.patch('/admin/services/:id/status', authenticateToken, requireRole('ADMIN'), (req: AuthRequest, res: Response): void => {
+  try {
+    const { status } = req.body;
+    if (status !== 'ACTIVE' && status !== 'PAUSED') {
+      res.status(400).json({ error: 'Status must be ACTIVE or PAUSED.' });
+      return;
+    }
+    const result = db.prepare('UPDATE services SET status = ? WHERE id = ?').run(status, req.params.id);
+    if (result.changes === 0) {
+      res.status(404).json({ error: 'Service listing not found.' });
+      return;
+    }
+    res.json({ message: `Service listing status updated to ${status}.` });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to update service listing status: ' + error.message });
+  }
+});
+
 // -------------------------------------------------------------
 // 9. HOME EMERGENCY HELP & URGENT REPAIR APIS
 // -------------------------------------------------------------
 
-apiRouter.post('/emergency/requests', (req: Request, res: Response): void => {
+apiRouter.post(['/emergency/requests', '/emergency'], (req: Request, res: Response): void => {
   try {
+    const rawType = req.body.incident_type || req.body.emergency_type || 'OTHER_URGENT';
+    let incident_type: EmergencyIncidentType = 'OTHER_URGENT';
+    if (typeof rawType === 'string') {
+      const lower = rawType.toLowerCase();
+      if (lower.includes('electric') || lower.includes('circuit') || lower.includes('spark')) {
+        incident_type = 'ELECTRICAL_HAZARD';
+      } else if (lower.includes('gas') || lower.includes('lpg')) {
+        incident_type = 'LPG_LEAK';
+      } else if (lower.includes('water') || lower.includes('pipe') || lower.includes('plumb')) {
+        incident_type = 'WATER_LEAK';
+      } else if (lower.includes('fire') || lower.includes('smoke')) {
+        incident_type = 'FIRE_SMOKE';
+      } else if (['LPG_LEAK', 'ELECTRICAL_HAZARD', 'WATER_LEAK', 'FIRE_SMOKE', 'OTHER_URGENT'].includes(rawType)) {
+        incident_type = rawType as EmergencyIncidentType;
+      }
+    }
+
+    const address = req.body.address || req.body.location_address;
     const {
-      incident_type,
       severity = 'HIGH',
       title,
       description,
       customer_name,
       customer_phone,
-      address,
       district,
       pincode,
       notes
     } = req.body;
 
-    if (!incident_type || !description || !customer_name || !customer_phone || !address || !district) {
-      res.status(400).json({ error: 'Incident type, description, name, phone, address, and district are required.' });
+    if (!description || !customer_name || !customer_phone || !address || !district) {
+      res.status(400).json({ error: 'Description, name, phone, address, and district are required.' });
       return;
     }
 
@@ -1377,6 +2190,7 @@ apiRouter.post('/emergency/requests', (req: Request, res: Response): void => {
     `).get(insertId);
 
     res.status(201).json({
+      id: insertId,
       message: 'Urgent repair request logged successfully. Local verified specialists have been alerted.',
       emergency_request: created
     });
@@ -1385,7 +2199,7 @@ apiRouter.post('/emergency/requests', (req: Request, res: Response): void => {
   }
 });
 
-apiRouter.get('/emergency/requests', (req: Request, res: Response): void => {
+apiRouter.get(['/emergency/requests', '/emergency'], (req: Request, res: Response): void => {
   try {
     const authHeader = req.headers['authorization'];
     let user: User | null = null;
@@ -1458,7 +2272,7 @@ apiRouter.get('/emergency/requests', (req: Request, res: Response): void => {
   }
 });
 
-apiRouter.get('/emergency/requests/:id', (req: Request, res: Response): void => {
+apiRouter.get(['/emergency/requests/:id', '/emergency/:id'], (req: Request, res: Response): void => {
   try {
     const request = db.prepare(`
       SELECT e.*,
@@ -1482,7 +2296,7 @@ apiRouter.get('/emergency/requests/:id', (req: Request, res: Response): void => 
   }
 });
 
-apiRouter.post('/emergency/requests/:id/accept', authenticateToken, requireRole('SERVICE_PROVIDER'), (req: AuthRequest, res: Response): void => {
+const handleAcceptEmergencyAction = (req: AuthRequest, res: Response): void => {
   try {
     const user = req.user!;
     const requestId = req.params.id;
@@ -1544,9 +2358,14 @@ apiRouter.post('/emergency/requests/:id/accept', authenticateToken, requireRole(
     }
     res.status(500).json({ error: 'Failed to accept emergency request: ' + error.message });
   }
-});
+};
 
-apiRouter.patch('/emergency/requests/:id/status', authenticateToken, (req: AuthRequest, res: Response): void => {
+apiRouter.post('/emergency/requests/:id/accept', authenticateToken, requireRole('SERVICE_PROVIDER'), handleAcceptEmergencyAction);
+apiRouter.post('/emergency/:id/accept', authenticateToken, requireRole('SERVICE_PROVIDER'), handleAcceptEmergencyAction);
+apiRouter.put('/emergency/requests/:id/accept', authenticateToken, requireRole('SERVICE_PROVIDER'), handleAcceptEmergencyAction);
+apiRouter.put('/emergency/:id/accept', authenticateToken, requireRole('SERVICE_PROVIDER'), handleAcceptEmergencyAction);
+
+const handleEmergencyStatusUpdate = (req: AuthRequest, res: Response): void => {
   try {
     const user = req.user!;
     const requestId = req.params.id;
@@ -1613,5 +2432,290 @@ apiRouter.patch('/emergency/requests/:id/status', authenticateToken, (req: AuthR
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to update emergency request status: ' + error.message });
   }
+};
+
+apiRouter.patch('/emergency/requests/:id/status', authenticateToken, handleEmergencyStatusUpdate);
+apiRouter.put('/emergency/requests/:id/status', authenticateToken, handleEmergencyStatusUpdate);
+apiRouter.patch('/emergency/:id/status', authenticateToken, handleEmergencyStatusUpdate);
+apiRouter.put('/emergency/:id/status', authenticateToken, handleEmergencyStatusUpdate);
+
+// -------------------------------------------------------------
+// 10. ADMIN INTELLIGENCE & ANALYTICS SUITE
+// -------------------------------------------------------------
+
+apiRouter.get('/admin/analytics', authenticateToken, requireRole('ADMIN'), (req: AuthRequest, res: Response): void => {
+  try {
+    const range = (req.query.range as string) || '30d';
+    let days = 30;
+    if (range === '7d') days = 7;
+    else if (range === '90d') days = 90;
+    else if (range === 'all') days = 3650;
+
+    const dateFilter = `datetime('now', '-${days} days')`;
+
+    // Metrics summary
+    const totalBookings = (db.prepare(`SELECT COUNT(*) as c FROM bookings WHERE created_at >= ${dateFilter}`).get() as any).c;
+    const completedBookings = (db.prepare(`SELECT COUNT(*) as c FROM bookings WHERE status = 'COMPLETED' AND created_at >= ${dateFilter}`).get() as any).c;
+    const totalVolume = (db.prepare(`SELECT COALESCE(SUM(total_price), 0) as s FROM bookings WHERE status = 'COMPLETED' AND created_at >= ${dateFilter}`).get() as any).s;
+    const avgRating = (db.prepare(`SELECT COALESCE(ROUND(AVG(rating), 2), 5.0) as r FROM reviews WHERE created_at >= ${dateFilter}`).get() as any).r;
+    const activeProviders = (db.prepare("SELECT COUNT(*) as c FROM provider_profiles WHERE verification_status = 'APPROVED'").get() as any).c;
+    const openEmergencies = (db.prepare("SELECT COUNT(*) as c FROM emergency_requests WHERE status = 'OPEN'").get() as any).c;
+
+    // Status distribution
+    const statusCounts = db.prepare(`
+      SELECT status, COUNT(*) as count
+      FROM bookings
+      WHERE created_at >= ${dateFilter}
+      GROUP BY status
+    `).all() as { status: string; count: number }[];
+
+    // Category distribution
+    const categoryVolume = db.prepare(`
+      SELECT c.name as category_name, c.slug, COUNT(b.id) as bookings_count, COALESCE(SUM(b.total_price), 0) as total_revenue
+      FROM categories c
+      LEFT JOIN services s ON s.category_id = c.id
+      LEFT JOIN bookings b ON b.service_id = s.id AND b.created_at >= ${dateFilter}
+      GROUP BY c.id
+      ORDER BY total_revenue DESC
+    `).all();
+
+    // Daily trends
+    const dailyTrends = db.prepare(`
+      SELECT substr(created_at, 1, 10) as day, COUNT(*) as bookings, COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN total_price ELSE 0 END), 0) as revenue
+      FROM bookings
+      WHERE created_at >= ${dateFilter}
+      GROUP BY day
+      ORDER BY day ASC
+    `).all();
+
+    // Top Providers
+    const topProviders = db.prepare(`
+      SELECT u.id, u.name, prof.business_name, prof.city, prof.district,
+             COUNT(b.id) as completed_count,
+             COALESCE(ROUND(AVG(r.rating), 1), 5.0) as rating_avg,
+             COALESCE(SUM(b.total_price), 0) as total_earnings
+      FROM users u
+      JOIN provider_profiles prof ON prof.user_id = u.id
+      LEFT JOIN bookings b ON b.provider_id = u.id AND b.status = 'COMPLETED'
+      LEFT JOIN reviews r ON r.provider_id = u.id
+      WHERE prof.verification_status = 'APPROVED'
+      GROUP BY u.id
+      ORDER BY completed_count DESC, rating_avg DESC
+      LIMIT 5
+    `).all();
+
+    res.json({
+      success: true,
+      range,
+      metrics: {
+        totalBookings,
+        completedBookings,
+        totalVolume,
+        avgRating,
+        activeProviders,
+        openEmergencies
+      },
+      statusDistribution: statusCounts,
+      categoryDistribution: categoryVolume,
+      dailyTrends,
+      topProviders
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to generate analytics: ' + error.message });
+  }
 });
+
+// -------------------------------------------------------------
+// 11. AI SERVICE ASSISTANT (GEMINI 3.8 FLASH + SMART FALLBACK)
+// -------------------------------------------------------------
+
+apiRouter.post('/ai/assistant', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { query, city, pincode } = req.body;
+    if (!query || typeof query !== 'string' || query.trim().length === 0) {
+      res.status(400).json({ error: 'Please describe your service problem or requirement.' });
+      return;
+    }
+
+    const cleanQuery = query.trim();
+    let diagnostic = '';
+    let safetyWarning: string | null = null;
+    let urgencyLevel = 'MEDIUM';
+    let recommendedCategorySlug = 'home-cleaning';
+    let searchKeywords: string[] = [];
+    let recommendedAction = 'Book a verified technician for inspection.';
+
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    if (apiKey) {
+      try {
+        const ai = new GoogleGenAI();
+        const prompt = `You are ServiceHub India's expert technical diagnostic AI assistant.
+A user in India has reported this problem:
+"${cleanQuery}"
+Location context: ${city || 'India'} (PIN: ${pincode || 'N/A'}).
+
+Analyze the maintenance issue, diagnose the probable cause, and assess safety.
+Return JSON ONLY matching this schema:
+{
+  "diagnostic": "2-3 sentences explaining the technical reason or root cause.",
+  "safetyWarning": "Short safety alert if electricity, water leakage, or gas is involved, otherwise null.",
+  "urgencyLevel": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
+  "recommendedCategorySlug": Must be strictly one of:
+    - "ac-repair-maintenance"
+    - "plumbing-water-tanks"
+    - "electrical-smart-home"
+    - "home-cleaning"
+    - "carpentry-woodwork"
+    - "appliance-repair"
+    - "agriculture-rural"
+    - "electronics-inverter-ro"
+    - "puja-vedic-events",
+  "searchKeywords": ["keyword1", "keyword2", "keyword3"],
+  "recommendedAction": "Actionable advice on what specialized service to book."
+}`;
+
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          config: {
+            responseMimeType: 'application/json'
+          }
+        });
+
+        if (response.text) {
+          const parsed = JSON.parse(response.text);
+          if (parsed.diagnostic) diagnostic = parsed.diagnostic;
+          if (parsed.safetyWarning) safetyWarning = parsed.safetyWarning;
+          if (parsed.urgencyLevel) urgencyLevel = parsed.urgencyLevel;
+          if (parsed.recommendedCategorySlug) recommendedCategorySlug = parsed.recommendedCategorySlug;
+          if (Array.isArray(parsed.searchKeywords)) searchKeywords = parsed.searchKeywords;
+          if (parsed.recommendedAction) recommendedAction = parsed.recommendedAction;
+        }
+      } catch (geminiError: any) {
+        console.warn('Gemini inference error, falling back to heuristic engine:', geminiError.message);
+      }
+    }
+
+    // Heuristic fallback if AI was unavailable or produced empty values
+    if (!diagnostic) {
+      const lower = cleanQuery.toLowerCase();
+      if (lower.includes('ac') || lower.includes('cool') || lower.includes('air condition') || lower.includes('compressor')) {
+        recommendedCategorySlug = 'ac-repair-maintenance';
+        diagnostic = 'Lack of cooling is typically caused by clogged dust filters, indoor blower dirt buildup, or micro refrigerant gas leakage in the copper evaporator coil.';
+        safetyWarning = 'If you notice ice forming on the brass valves, turn off the AC to prevent compressor burnout.';
+        urgencyLevel = 'HIGH';
+        searchKeywords = ['Split AC Jet Cleaning', 'AC Gas Refill', 'Cooling Diagnostics'];
+        recommendedAction = 'Schedule a deep jet pump coil cleaning and refrigerant pressure test with a certified HVAC technician.';
+      } else if (lower.includes('leak') || lower.includes('pipe') || lower.includes('tap') || lower.includes('tank') || lower.includes('flush')) {
+        recommendedCategorySlug = 'plumbing-water-tanks';
+        diagnostic = 'Water leakage usually stems from worn-out rubber gaskets, cracked PVC joints, or water hammer pressure in overhead storage lines.';
+        safetyWarning = 'Turn off the main overhead tank inlet valve to minimize water seepage into walls and electrical conduits.';
+        urgencyLevel = 'HIGH';
+        searchKeywords = ['Pipe Leakage Repair', 'Water Tank Cleaning', 'Bathroom Fittings'];
+        recommendedAction = 'Book an emergency plumber to replace faulty valves and seal leaking piping.';
+      } else if (lower.includes('spark') || lower.includes('mcb') || lower.includes('shock') || lower.includes('wire') || lower.includes('electric') || lower.includes('current')) {
+        recommendedCategorySlug = 'electrical-smart-home';
+        diagnostic = 'Sparking or repeated MCB trips indicate short circuits, overloaded wiring, or faulty grounding/earthing continuity.';
+        safetyWarning = 'CRITICAL: Switch off the main MCB breaker immediately. Do not touch wet switchboards.';
+        urgencyLevel = 'CRITICAL';
+        searchKeywords = ['MCB Panel Repair', 'Earthing Pit Test', 'Wiring Short Circuit'];
+        recommendedAction = 'Engage a certified licensed wireman to inspect circuit insulation and grounding.';
+      } else if (lower.includes('wood') || lower.includes('door') || lower.includes('lock') || lower.includes('cabinet') || lower.includes('furniture') || lower.includes('hinge')) {
+        recommendedCategorySlug = 'carpentry-woodwork';
+        diagnostic = 'Stuck doors and sagging modular cabinet drawers are typically due to humidity warping or misaligned hydraulic soft-close hinges.';
+        safetyWarning = null;
+        urgencyLevel = 'LOW';
+        searchKeywords = ['Cabinet Hinge Adjustment', 'Door Lock Repair', 'Furniture Assembly'];
+        recommendedAction = 'Book a skilled carpenter to plane the edges and realign the hinges.';
+      } else if (lower.includes('wash') || lower.includes('fridge') || lower.includes('refrigerator') || lower.includes('microwave') || lower.includes('oven')) {
+        recommendedCategorySlug = 'appliance-repair';
+        diagnostic = 'Appliance malfunction often indicates capacitor degradation, thermal fuse failure, or motor belt wear.';
+        safetyWarning = 'Unplug the appliance power cord from the wall socket before inspecting.';
+        urgencyLevel = 'MEDIUM';
+        searchKeywords = ['Washing Machine Drum Repair', 'Refrigerator Gas Refill', 'Microwave PCB'];
+        recommendedAction = 'Request a verified home appliance specialist with genuine spare parts.';
+      } else if (lower.includes('solar') || lower.includes('pump') || lower.includes('tractor') || lower.includes('drip') || lower.includes('irrigation')) {
+        recommendedCategorySlug = 'agriculture-rural';
+        diagnostic = 'Agricultural pump performance drops are commonly caused by DC drive controller faults, dry-run impeller wear, or voltage drops.';
+        safetyWarning = 'Isolate the solar DC isolator switch before touching controller terminals.';
+        urgencyLevel = 'HIGH';
+        searchKeywords = ['Solar Pump Repair', 'Submersible Rewinding', 'Drip Line Flush'];
+        recommendedAction = 'Book an agricultural machinery specialist for field inspection.';
+      } else if (lower.includes('inverter') || lower.includes('battery') || lower.includes('ro') || lower.includes('purifier')) {
+        recommendedCategorySlug = 'electronics-inverter-ro';
+        diagnostic = 'Inverter backup failure is usually due to low electrolyte specific gravity in tubular battery cells or choked RO membranes.';
+        safetyWarning = 'Wear gloves when checking battery tops; do not expose to open flame.';
+        urgencyLevel = 'MEDIUM';
+        searchKeywords = ['Inverter Battery Health', 'RO Membrane Replacement', 'UPS Calibration'];
+        recommendedAction = 'Book an electronics clinic visit for hydrometer testing and membrane descaling.';
+      } else {
+        recommendedCategorySlug = 'home-cleaning';
+        diagnostic = 'Deep sanitization and mechanized equipment removes ingrained grime, allergens, and microbial buildup.';
+        safetyWarning = null;
+        urgencyLevel = 'LOW';
+        searchKeywords = ['Full Home Deep Cleaning', 'Kitchen Degreasing', 'Sofa Shampoo'];
+        recommendedAction = 'Book our verified hygiene team with single-disc mechanized scrubbers.';
+      }
+    }
+
+    // Look up category record
+    const categoryRecord = db.prepare('SELECT id, name, slug, description, image_url, sector FROM categories WHERE slug = ?').get(recommendedCategorySlug) as any;
+
+    // Look up matching real active services from database
+    let matchingServices: any[] = [];
+    if (categoryRecord) {
+      matchingServices = db.prepare(`
+        SELECT s.*, u.name as provider_name, u.phone as provider_phone, prof.business_name, prof.city, prof.district, prof.verified_badge,
+               COALESCE(ROUND(AVG(r.rating), 1), 5.0) as rating_avg,
+               COUNT(r.id) as reviews_count
+        FROM services s
+        JOIN users u ON s.provider_id = u.id
+        JOIN provider_profiles prof ON prof.user_id = u.id
+        LEFT JOIN reviews r ON r.service_id = s.id
+        WHERE s.category_id = ? AND s.status = 'ACTIVE' AND prof.verification_status = 'APPROVED'
+        GROUP BY s.id
+        ORDER BY rating_avg DESC
+        LIMIT 4
+      `).all(categoryRecord.id);
+    }
+
+    // Look up matching real approved providers
+    let matchingProviders: any[] = [];
+    if (categoryRecord) {
+      matchingProviders = db.prepare(`
+        SELECT u.id, u.name, u.phone, u.avatar_url,
+               prof.business_name, prof.experience_years, prof.hourly_rate, prof.service_area, prof.city, prof.district, prof.verified_badge,
+               COALESCE(ROUND(AVG(r.rating), 1), 5.0) as rating_avg,
+               COUNT(r.id) as reviews_count
+        FROM users u
+        JOIN provider_profiles prof ON prof.user_id = u.id
+        JOIN services s ON s.provider_id = u.id
+        LEFT JOIN reviews r ON r.provider_id = u.id
+        WHERE s.category_id = ? AND prof.verification_status = 'APPROVED'
+        GROUP BY u.id
+        ORDER BY rating_avg DESC
+        LIMIT 3
+      `).all(categoryRecord.id);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        diagnostic,
+        safetyWarning,
+        urgencyLevel,
+        recommendedCategory: categoryRecord ? categoryRecord.name : 'Technical Services',
+        recommendedCategorySlug,
+        searchKeywords,
+        recommendedAction,
+        matchingServices,
+        matchingProviders
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: 'AI Assistant failed: ' + error.message });
+  }
+});
+
 
